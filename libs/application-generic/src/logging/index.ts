@@ -1,14 +1,15 @@
 import { NestInterceptor, RequestMethod } from '@nestjs/common';
 import {
-  LoggerErrorInterceptor,
-  Logger,
-  LoggerModule,
-  PinoLogger,
   getLoggerToken,
+  Logger,
+  LoggerErrorInterceptor,
+  LoggerModule,
   Params,
+  PinoLogger,
 } from 'nestjs-pino';
 import { storage, Store } from 'nestjs-pino/storage';
 import { sensitiveFields } from './masking';
+
 export * from './LogDecorator';
 
 export function getErrorInterceptor(): NestInterceptor {
@@ -40,14 +41,13 @@ export function getLogLevel() {
   if (loggingLevelArr.indexOf(logLevel) === -1) {
     // eslint-disable-next-line no-console
     console.log(
-      logLevel +
-        'is not a valid log level of ' +
-        loggingLevelArr +
-        '. Reverting to info.'
+      `${logLevel}is not a valid log level of ${loggingLevelArr}. Reverting to info.`,
     );
 
     logLevel = 'info';
   }
+  // eslint-disable-next-line no-console
+  console.log(`Log Level Chosen: ${logLevel}`);
 
   return logLevel;
 }
@@ -57,17 +57,17 @@ function getLoggingVariables(): ILoggingVariables {
   const env = process.env.NODE_ENV ?? 'local';
 
   // eslint-disable-next-line no-console
-  console.log('Environment: ' + env);
+  console.log(`Environment: ${env}`);
 
   const hostingPlatform = process.env.HOSTING_PLATFORM ?? 'Docker';
 
   // eslint-disable-next-line no-console
-  console.log('Platform: ' + hostingPlatform);
+  console.log(`Platform: ${hostingPlatform}`);
 
   const tenant = process.env.TENANT ?? 'OS';
 
   // eslint-disable-next-line no-console
-  console.log('Tenant: ' + tenant);
+  console.log(`Tenant: ${tenant}`);
 
   return {
     env,
@@ -78,9 +78,9 @@ function getLoggingVariables(): ILoggingVariables {
 }
 
 export function createNestLoggingModuleOptions(
-  settings: ILoggerSettings
+  settings: ILoggerSettings,
 ): Params {
-  const values = getLoggingVariables();
+  const values: ILoggingVariables = getLoggingVariables();
 
   let redactFields: string[] = sensitiveFields.map((val) => val);
 
@@ -88,13 +88,13 @@ export function createNestLoggingModuleOptions(
 
   const baseWildCards = '*.';
   const baseArrayWildCards = '*[*].';
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= 6; i += 1) {
     redactFields = redactFields.concat(
-      sensitiveFields.map((val) => baseWildCards.repeat(i) + val)
+      sensitiveFields.map((val) => baseWildCards.repeat(i) + val),
     );
 
     redactFields = redactFields.concat(
-      sensitiveFields.map((val) => baseArrayWildCards.repeat(i) + val)
+      sensitiveFields.map((val) => baseArrayWildCards.repeat(i) + val),
     );
   }
 
@@ -102,12 +102,13 @@ export function createNestLoggingModuleOptions(
     ? { target: 'pino-pretty' }
     : undefined;
 
+  // eslint-disable-next-line no-console
   console.log(loggingLevelSet);
 
   // eslint-disable-next-line no-console
   console.log(
-    'Selected Log Transport ' + (!transport ? 'None' : 'pino-pretty'),
-    loggingLevelSet
+    `Selected Log Transport ${!transport ? 'None' : 'pino-pretty'}`,
+    loggingLevelSet,
   );
 
   return {
@@ -117,7 +118,7 @@ export function createNestLoggingModuleOptions(
       level: values.level,
       redact: {
         paths: redactFields,
-        censor: '[REDACTED]',
+        censor: customRedaction,
       },
       base: {
         pid: process.pid,
@@ -126,8 +127,14 @@ export function createNestLoggingModuleOptions(
         platform: values.hostingPlatform,
         tenant: values.tenant,
       },
-      transport: transport,
+      transport,
       autoLogging: !['test', 'local'].includes(process.env.NODE_ENV),
+      /**
+       * These custom props are only added to 'request completed' and 'request errored' logs.
+       * Logs generated during request processing won't have these props by default.
+       * To include these or any other custom props in mid-request logs,
+       * use `PinoLogger.assign(<props>)` explicitly before logging.
+       */
       customProps: (req: any, res: any) => ({
         user: {
           userId: req?.user?._id || null,
@@ -140,6 +147,17 @@ export function createNestLoggingModuleOptions(
     },
   };
 }
+
+const customRedaction = (value: any, path: string[]) => {
+  /*
+   * Logger.
+   * if (obj.email && typeof obj.email === 'string') {
+   *   obj.email = '[REDACTED]';
+   * }
+   *
+   * return JSON.parse(JSON.stringify(obj));
+   */
+};
 
 interface ILoggerSettings {
   serviceName: string;

@@ -1,12 +1,8 @@
-const nr = require('newrelic');
-
-import { Injectable, Logger } from '@nestjs/common';
-import { JobEntity, JobRepository, JobStatusEnum, NotificationTemplateRepository } from '@novu/dal';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { JobEntity, JobRepository, JobStatusEnum, NotificationRepository } from '@novu/dal';
 import { StepTypeEnum } from '@novu/shared';
-import * as Sentry from '@sentry/node';
+import { setUser } from '@sentry/node';
 import {
-  buildNotificationTemplateKey,
-  CachedEntity,
   getJobDigest,
   Instrument,
   InstrumentUsecase,
@@ -15,9 +11,13 @@ import {
 } from '@novu/application-generic';
 
 import { RunJobCommand } from './run-job.command';
-import { QueueNextJob, QueueNextJobCommand } from '../queue-next-job';
 import { SendMessage, SendMessageCommand } from '../send-message';
-import { PlatformException, EXCEPTION_MESSAGE_ON_WEBHOOK_FILTER } from '../../../shared/utils';
+import { PlatformException, EXCEPTION_MESSAGE_ON_WEBHOOK_FILTER, shouldHaltOnStepFailure } from '../../../shared/utils';
+import { SetJobAsFailed } from '../update-job-status/set-job-as-failed.usecase';
+import { AddJob } from '../add-job';
+import { SetJobAsFailedCommand } from '../update-job-status/set-job-as.command';
+
+const nr = require('newrelic');
 
 const LOG_CONTEXT = 'RunJob';
 
@@ -26,15 +26,16 @@ export class RunJob {
   constructor(
     private jobRepository: JobRepository,
     private sendMessage: SendMessage,
-    private queueNextJob: QueueNextJob,
+    @Inject(forwardRef(() => AddJob)) private addJobUsecase: AddJob,
+    @Inject(forwardRef(() => SetJobAsFailed)) private setJobAsFailed: SetJobAsFailed,
     private storageHelperService: StorageHelperService,
-    private notificationTemplateRepository: NotificationTemplateRepository,
+    private notificationRepository: NotificationRepository,
     private logger?: PinoLogger
   ) {}
 
   @InstrumentUsecase()
   public async execute(command: RunJobCommand): Promise<JobEntity | undefined> {
-    Sentry.setUser({
+    setUser({
       id: command.userId,
       organizationId: command.organizationId,
       environmentId: command.environmentId,
@@ -73,10 +74,14 @@ export class RunJob {
 
       await this.storageHelperService.getAttachments(job.payload?.attachments);
 
-      const template = await this.getNotificationTemplate({
-        _id: job._templateId,
-        environmentId: job._environmentId,
+      const notification = await this.notificationRepository.findOne({
+        _id: job._notificationId,
+        _environmentId: job._environmentId,
       });
+
+      if (!notification) {
+        throw new PlatformException(`Notification with id ${job._notificationId} not found`);
+      }
 
       const sendMessageResult = await this.sendMessage.execute(
         SendMessageCommand.create({
@@ -96,7 +101,8 @@ export class RunJob {
           jobId: job._id,
           events: job.digest?.events,
           job,
-          tags: template?.tags || [],
+          tags: notification.tags || [],
+          statelessPreferences: job.preferences,
         })
       );
 
@@ -104,26 +110,13 @@ export class RunJob {
         await this.jobRepository.updateStatus(job._environmentId, job._id, JobStatusEnum.COMPLETED);
       }
     } catch (error: any) {
-      Logger.error({ error }, `Running job ${job._id} has thrown an error`, LOG_CONTEXT);
-      if (job.step.shouldStopOnFail || this.shouldBackoff(error)) {
+      if (shouldHaltOnStepFailure(job) || this.shouldBackoff(error)) {
         shouldQueueNextJob = false;
       }
-      throw new PlatformException(error.message);
+      throw error;
     } finally {
       if (shouldQueueNextJob) {
-        const newJob = await this.queueNextJob.execute(
-          QueueNextJobCommand.create({
-            parentId: job._id,
-            environmentId: job._environmentId,
-            organizationId: job._organizationId,
-            userId: job._userId,
-          })
-        );
-
-        // Only remove the attachments if that is the last job
-        if (!newJob) {
-          await this.storageHelperService.deleteAttachments(job.payload?.attachments);
-        }
+        await this.tryQueueNextJobs(job);
       } else {
         // Remove the attachments if the job should not be queued
         await this.storageHelperService.deleteAttachments(job.payload?.attachments);
@@ -131,15 +124,71 @@ export class RunJob {
     }
   }
 
-  @CachedEntity({
-    builder: (command: { _id: string; environmentId: string }) =>
-      buildNotificationTemplateKey({
-        _environmentId: command.environmentId,
-        _id: command._id,
-      }),
-  })
-  private async getNotificationTemplate({ _id, environmentId }: { _id: string; environmentId: string }) {
-    return await this.notificationTemplateRepository.findById(_id, environmentId);
+  /**
+   * Attempts to queue subsequent jobs in the workflow chain.
+   * If queueNextJob.execute returns undefined, we stop the workflow.
+   * Otherwise, we continue trying to queue the next job in the chain.
+   */
+  private async tryQueueNextJobs(job: JobEntity): Promise<void> {
+    let currentFailedJob: JobEntity | null = job;
+    let nextJob: JobEntity | null = null;
+    if (!currentFailedJob) {
+      return;
+    }
+
+    let shouldContinue = true;
+
+    while (shouldContinue) {
+      try {
+        if (!currentFailedJob) {
+          return;
+        }
+
+        nextJob = await this.jobRepository.findOne({
+          _environmentId: currentFailedJob._environmentId,
+          _parentId: currentFailedJob._id,
+        });
+
+        if (!nextJob) {
+          return;
+        }
+
+        await this.addJobUsecase.execute({
+          userId: nextJob._userId,
+          environmentId: nextJob._environmentId,
+          organizationId: nextJob._organizationId,
+          jobId: nextJob._id,
+          job: nextJob,
+        });
+
+        shouldContinue = false;
+      } catch (error: any) {
+        if (!nextJob) {
+          return;
+        }
+
+        await this.setJobAsFailed.execute(
+          SetJobAsFailedCommand.create({
+            environmentId: nextJob._environmentId,
+            jobId: nextJob._id,
+            organizationId: nextJob._organizationId,
+            userId: nextJob._userId,
+          }),
+          error
+        );
+
+        if (shouldHaltOnStepFailure(nextJob) || this.shouldBackoff(error)) {
+          shouldContinue = false;
+          throw error;
+        }
+
+        currentFailedJob = nextJob;
+      } finally {
+        if (nextJob) {
+          await this.storageHelperService.deleteAttachments(nextJob.payload?.attachments);
+        }
+      }
+    }
   }
 
   private assignLogger(job) {
