@@ -1,10 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { PostmarkEmailProvider } from '@novu/providers';
-import { BaseHandler } from './base.handler';
+import { ChannelTypeEnum, EmailProviderIdEnum, ICredentials } from '@novu/shared';
+import { BaseEmailHandler } from './base.handler';
 
-export class PostmarkHandler extends BaseHandler {
+export class PostmarkHandler extends BaseEmailHandler {
   constructor() {
-    super('postmark', ChannelTypeEnum.EMAIL);
+    super(EmailProviderIdEnum.Postmark, ChannelTypeEnum.EMAIL);
   }
   buildProvider(credentials: ICredentials, from?: string) {
     const config: { apiKey: string; from: string } = {

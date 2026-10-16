@@ -1,19 +1,20 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
-import axios from 'axios';
 import {
   EnvironmentRepository,
-  ExecutionDetailsRepository,
+  JobEntity,
+  JobRepository,
   MessageRepository,
   StepFilter,
   SubscriberEntity,
   SubscriberRepository,
-  JobRepository,
-  TenantEntity,
-  TenantRepository,
 } from '@novu/dal';
 import {
-  ChannelTypeEnum,
+  ExecutionDetailsSourceEnum,
+  ExecutionDetailsStatusEnum,
+  FeatureFlagsKeysEnum,
   FILTER_TO_LABEL,
+  FieldLogicalOperatorEnum,
+  FieldOperatorEnum,
   FilterParts,
   FilterPartTypeEnum,
   ICondition,
@@ -23,38 +24,29 @@ import {
   IWebhookFilterPart,
   PreviousStepTypeEnum,
   TimeOperatorEnum,
-  IMessageFilter,
-  FieldOperatorEnum,
-  FieldLogicalOperatorEnum,
-  ExecutionDetailsSourceEnum,
-  IJob,
-  ExecutionDetailsStatusEnum,
 } from '@novu/shared';
-import { Filter } from '../../utils/filter';
+import { differenceInDays, differenceInHours, differenceInMinutes, parseISO } from 'date-fns';
+import { get as lodashGet } from 'lodash';
+import { decryptApiKey } from '../../encryption';
+import { PinoLogger } from '../../logging';
+import { buildSubscriberKey, CachedResponse, FeatureFlagsService, safeOutboundJsonRequest } from '../../services';
 import {
+  assertSafeOutboundUrl,
+  createHash,
+  createWebhookFilterError,
+  Filter,
   FilterProcessingDetails,
   IFilterVariables,
-} from '../../utils/filter-processing-details';
+  PlatformException,
+  SsrfBlockedError,
+  shouldPropagateWebhookFilterFailure,
+  WEBHOOK_FILTER_ERROR_CODE,
+  WEBHOOK_FILTER_REQUEST_FAILED_DATA,
+  WEBHOOK_FILTER_SSRF_BLOCKED_DATA,
+} from '../../utils';
+import { CompileTemplate } from '../compile-template';
+import { CreateExecutionDetails, CreateExecutionDetailsCommand, DetailEnum } from '../create-execution-details';
 import { ConditionsFilterCommand } from './conditions-filter.command';
-import {
-  differenceInDays,
-  differenceInHours,
-  differenceInMinutes,
-  parseISO,
-} from 'date-fns';
-import { EmailEventStatusEnum } from '@novu/stateless';
-import { PlatformException } from '../../utils/exceptions';
-import { createHash } from '../../utils/hmac';
-import { Instrument } from '../../instrumentation';
-import { CachedEntity } from '../../services/cache/interceptors/cached-entity.interceptor';
-import { buildSubscriberKey } from '../../services/cache/key-builders/entities';
-import { CompileTemplate, CompileTemplateCommand } from '../compile-template';
-import { DetailEnum } from '../create-execution-details';
-import {
-  ExecutionLogRoute,
-  ExecutionLogRouteCommand,
-} from '../execution-log-route';
-import { decryptApiKey } from '../../encryption';
 
 export interface IConditionsFilterResponse {
   passed: boolean;
@@ -67,27 +59,27 @@ export class ConditionsFilter extends Filter {
   constructor(
     private subscriberRepository: SubscriberRepository,
     private messageRepository: MessageRepository,
-    private executionDetailsRepository: ExecutionDetailsRepository,
     private jobRepository: JobRepository,
     private environmentRepository: EnvironmentRepository,
-    @Inject(forwardRef(() => ExecutionLogRoute))
-    private executionLogRoute: ExecutionLogRoute,
-    private compileTemplate: CompileTemplate
+    @Inject(forwardRef(() => CreateExecutionDetails))
+    private createExecutionDetails: CreateExecutionDetails,
+    private compileTemplate: CompileTemplate,
+    private featureFlagsService: FeatureFlagsService,
+    private logger: PinoLogger
   ) {
     super();
+    this.logger?.setContext(this.constructor.name);
   }
 
-  public async filter(
-    command: ConditionsFilterCommand
-  ): Promise<IConditionsFilterResponse> {
-    const variables = command.variables;
+  public async filter(command: ConditionsFilterCommand): Promise<IConditionsFilterResponse> {
+    const { variables } = command;
     const filters = this.extractFilters(command);
 
     if (!filters || !Array.isArray(filters) || filters.length === 0) {
       return {
         passed: true,
         conditions: [],
-        variables: variables,
+        variables,
       };
     }
 
@@ -97,34 +89,22 @@ export class ConditionsFilter extends Filter {
       const filterProcessingDetails = new FilterProcessingDetails();
       filterProcessingDetails.addFilter(filter, variables);
 
-      const children = filter.children;
-      const noRules =
-        !children || (Array.isArray(children) && children.length === 0);
+      const { children } = filter;
+      const noRules = !children || (Array.isArray(children) && children.length === 0);
       if (noRules) {
         return true;
       }
 
-      const singleRule =
-        !children || (Array.isArray(children) && children.length === 1);
+      const singleRule = !children || (Array.isArray(children) && children.length === 1);
       if (singleRule) {
-        const result = await this.processFilter(
-          variables,
-          children[0],
-          command,
-          filterProcessingDetails
-        );
+        const result = await this.processFilter(variables, children[0], command, filterProcessingDetails);
 
         details.push(filterProcessingDetails);
 
         return result;
       }
 
-      const result = await this.handleGroupFilters(
-        filter,
-        variables,
-        command,
-        filterProcessingDetails
-      );
+      const result = await this.handleGroupFilters(filter, variables, command, filterProcessingDetails);
 
       details.push(filterProcessingDetails);
 
@@ -133,10 +113,7 @@ export class ConditionsFilter extends Filter {
 
     const conditions = details
       .map((detail) => detail.toObject().conditions)
-      .reduce(
-        (conditionsArray, collection) => [...collection, ...conditionsArray],
-        []
-      );
+      .reduce((conditionsArray, collection) => [...collection, ...conditionsArray], []);
 
     return {
       passed: !!foundFilter,
@@ -146,11 +123,7 @@ export class ConditionsFilter extends Filter {
   }
 
   private extractFilters(command: ConditionsFilterCommand) {
-    return command.filters?.length
-      ? command.filters
-      : command.step?.filters?.length
-      ? command.step.filters
-      : [];
+    return command.filters?.length ? command.filters : command.step?.filters?.length ? command.step.filters : [];
   }
 
   public static sumFilters(
@@ -163,10 +136,7 @@ export class ConditionsFilter extends Filter {
   ) {
     let type: string = condition.filter?.toLowerCase();
 
-    if (
-      condition.filter === FILTER_TO_LABEL.isOnline ||
-      condition.filter === FILTER_TO_LABEL.isOnlineInLast
-    ) {
+    if (condition.filter === FILTER_TO_LABEL.isOnline || condition.filter === FILTER_TO_LABEL.isOnlineInLast) {
       type = 'online';
     }
 
@@ -180,10 +150,7 @@ export class ConditionsFilter extends Filter {
   ): Promise<boolean> {
     const job = await this.jobRepository.findOne({
       transactionId: command.job.transactionId,
-      // backward compatibility - ternary needed to be removed once the queue renewed
-      _subscriberId: command.job._subscriberId
-        ? command.job._subscriberId
-        : command.job.subscriberId,
+      _subscriberId: command.job._subscriberId,
       _environmentId: command.environmentId,
       _organizationId: command.organizationId,
       'step.uuid': filter.step,
@@ -196,10 +163,7 @@ export class ConditionsFilter extends Filter {
     const message = await this.messageRepository.findOne({
       _jobId: job._id,
       _environmentId: command.environmentId,
-      // backward compatibility - ternary needed to be removed once the queue renewed
-      _subscriberId: command.job._subscriberId
-        ? command.job._subscriberId
-        : command.job.subscriberId,
+      _subscriberId: command.job._subscriberId,
       transactionId: command.job.transactionId,
     });
 
@@ -212,43 +176,10 @@ export class ConditionsFilter extends Filter {
     const expected = 'true';
     const operator = FieldOperatorEnum.EQUAL;
 
-    if (message?.channel === ChannelTypeEnum.EMAIL) {
-      const count = await this.executionDetailsRepository.count({
-        _jobId: command.job._parentId,
-        _messageId: message._id,
-        _environmentId: command.environmentId,
-        webhookStatus: EmailEventStatusEnum.OPENED,
-      });
-
-      const passed = [
-        PreviousStepTypeEnum.UNREAD,
-        PreviousStepTypeEnum.UNSEEN,
-      ].includes(filter.stepType)
-        ? count === 0
-        : count > 0;
-
-      filterProcessingDetails.addCondition({
-        filter: label,
-        field,
-        expected,
-        actual: `${passed}`,
-        operator,
-        passed,
-      });
-
-      return passed;
-    }
-
-    const value = [
-      PreviousStepTypeEnum.SEEN,
-      PreviousStepTypeEnum.UNSEEN,
-    ].includes(filter.stepType)
+    const value = [PreviousStepTypeEnum.SEEN, PreviousStepTypeEnum.UNSEEN].includes(filter.stepType)
       ? message.seen
       : message.read;
-    const passed = [
-      PreviousStepTypeEnum.UNREAD,
-      PreviousStepTypeEnum.UNSEEN,
-    ].includes(filter.stepType)
+    const passed = [PreviousStepTypeEnum.UNREAD, PreviousStepTypeEnum.UNSEEN].includes(filter.stepType)
       ? value === false
       : value;
 
@@ -275,8 +206,7 @@ export class ConditionsFilter extends Filter {
     });
 
     const hasNoOnlineFieldsSet =
-      typeof subscriber?.isOnline === 'undefined' &&
-      typeof subscriber?.lastOnlineAt === 'undefined';
+      typeof subscriber?.isOnline === 'undefined' && typeof subscriber?.lastOnlineAt === 'undefined';
     const isOnlineString = `${subscriber?.isOnline ?? ''}`;
     const lastOnlineAtString = `${subscriber?.lastOnlineAt ?? ''}`;
     // the old subscriber created before the is online functionality should not be processed
@@ -285,15 +215,8 @@ export class ConditionsFilter extends Filter {
         filter: FILTER_TO_LABEL[filter.on],
         field: 'isOnline',
         expected: `${filter.value}`,
-        actual: `${
-          filter.on === FilterPartTypeEnum.IS_ONLINE
-            ? isOnlineString
-            : lastOnlineAtString
-        }`,
-        operator:
-          filter.on === FilterPartTypeEnum.IS_ONLINE
-            ? FieldOperatorEnum.EQUAL
-            : filter.timeOperator,
+        actual: `${filter.on === FilterPartTypeEnum.IS_ONLINE ? isOnlineString : lastOnlineAtString}`,
+        operator: filter.on === FilterPartTypeEnum.IS_ONLINE ? FieldOperatorEnum.EQUAL : filter.timeOperator,
         passed: false,
       });
 
@@ -315,13 +238,9 @@ export class ConditionsFilter extends Filter {
     }
 
     const currentDate = new Date();
-    const lastOnlineAt = subscriber?.lastOnlineAt
-      ? parseISO(subscriber?.lastOnlineAt)
-      : new Date();
+    const lastOnlineAt = subscriber?.lastOnlineAt ? parseISO(subscriber?.lastOnlineAt) : new Date();
     const diff = differenceIn(currentDate, lastOnlineAt, filter.timeOperator);
-    const result =
-      subscriber?.isOnline ||
-      (!subscriber?.isOnline && diff >= 0 && diff <= filter.value);
+    const result = subscriber?.isOnline || (!subscriber?.isOnline && diff >= 0 && diff <= filter.value);
 
     filterProcessingDetails.addCondition({
       filter: FILTER_TO_LABEL[filter.on],
@@ -344,32 +263,96 @@ export class ConditionsFilter extends Filter {
 
     const payload = await this.buildPayload(variables, command);
 
-    const hmac = await this.buildHmac(command);
+    // Validate the URL syntax before any HMAC is built; the connect-time guard
+    // and redirect re-validation happen inside safeOutboundJsonRequest.
+    try {
+      assertSafeOutboundUrl(child.webhookUrl);
+    } catch (err) {
+      if (err instanceof SsrfBlockedError) {
+        throw createWebhookFilterError({
+          code: WEBHOOK_FILTER_ERROR_CODE.SSRF_BLOCKED,
+          message: err.message,
+          data: WEBHOOK_FILTER_SSRF_BLOCKED_DATA,
+        });
+      }
+      throw err;
+    }
 
-    const config = {
-      headers: {
-        'nv-hmac-256': hmac,
-      },
-    };
+    const hmac = await this.buildHmac(command);
+    const headers: Record<string, string> = {};
+    if (hmac) {
+      headers['nv-hmac-256'] = hmac;
+    }
 
     try {
-      return await axios
-        .post(child.webhookUrl, payload, config)
-        .then((response) => {
-          return response.data as Record<string, unknown>;
-        });
-    } catch (err: any) {
-      throw new Error(
-        JSON.stringify({
+      const response = await safeOutboundJsonRequest<Record<string, unknown>>({
+        url: child.webhookUrl,
+        method: 'POST',
+        headers,
+        body: payload,
+      });
+
+      await this.maybeLogWebhookFilterResponse(command, child, response);
+
+      return response.body;
+    } catch (err) {
+      if (err instanceof SsrfBlockedError) {
+        throw createWebhookFilterError({
+          code: WEBHOOK_FILTER_ERROR_CODE.SSRF_BLOCKED,
           message: err.message,
-          data: 'Exception while performing webhook request.',
-        })
-      );
+          data: WEBHOOK_FILTER_SSRF_BLOCKED_DATA,
+        });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw createWebhookFilterError({
+        code: WEBHOOK_FILTER_ERROR_CODE.REQUEST_FAILED,
+        message,
+        data: WEBHOOK_FILTER_REQUEST_FAILED_DATA,
+      });
     }
   }
 
-  private async buildHmac(command: ConditionsFilterCommand): Promise<string> {
-    if (process.env.NODE_ENV === 'test') return '';
+  /**
+   * Best-effort pino log for webhook filter diagnostics. Gated by the same flag
+   * as step-condition evaluation execution details. Logs only the HTTP status and
+   * the field value used by the filter comparison — never the full response body,
+   * which may contain subscriber PII or credentials outside path-based redaction.
+   */
+  private async maybeLogWebhookFilterResponse(
+    command: ConditionsFilterCommand,
+    child: IWebhookFilterPart,
+    response: { statusCode: number; statusMessage: string; body: Record<string, unknown> | undefined }
+  ): Promise<void> {
+    try {
+      const isEnabled = await this.featureFlagsService.getFlag({
+        key: FeatureFlagsKeysEnum.IS_STEP_CONDITIONS_EVALUATION_TRACE_ENABLED,
+        defaultValue: false,
+        organization: { _id: command.organizationId },
+        environment: { _id: command.environmentId },
+      });
+
+      if (!isEnabled) {
+        return;
+      }
+
+      this.logger.info(
+        {
+          statusCode: response.statusCode,
+          statusMessage: response.statusMessage,
+          field: child.field,
+          fieldValue: lodashGet(response.body, child.field),
+          jobId: command.job?._id,
+          transactionId: command.job?.transactionId,
+        },
+        'Webhook filter POST response'
+      );
+    } catch {
+      // Logging must never break filter evaluation.
+    }
+  }
+
+  private async buildHmac(command: ConditionsFilterCommand): Promise<string | null> {
+    if (process.env.NODE_ENV === 'test') return null;
 
     const environment = await this.environmentRepository.findOne({
       _id: command.environmentId,
@@ -377,16 +360,17 @@ export class ConditionsFilter extends Filter {
     });
     if (!environment) throw new PlatformException('Environment is not found');
 
-    return createHash(
-      decryptApiKey(environment.apiKeys[0].key),
-      command.environmentId
-    );
+    const apiKey = environment.apiKeys[0]?.key;
+    const decryptedKey = apiKey ? decryptApiKey(apiKey) : null;
+
+    if (!decryptedKey || !command.environmentId) {
+      return null;
+    }
+
+    return createHash(decryptedKey, command.environmentId);
   }
 
-  private async buildPayload(
-    variables: IFilterVariables,
-    command: ConditionsFilterCommand
-  ) {
+  private async buildPayload(variables: IFilterVariables, command: ConditionsFilterCommand) {
     if (process.env.NODE_ENV === 'test') return variables;
 
     const payload: Partial<{
@@ -426,61 +410,81 @@ export class ConditionsFilter extends Filter {
     command: ConditionsFilterCommand,
     filterProcessingDetails: FilterProcessingDetails
   ): Promise<boolean> {
-    let passed = false;
+    try {
+      let passed = false;
 
-    if (child.on === FilterPartTypeEnum.WEBHOOK) {
-      if (process.env.NODE_ENV === 'test') return true;
-      child.value = await this.compileFilter(
-        child.value,
-        variables,
-        command.job
-      );
-      const res = await this.getWebhookResponse(child, variables, command);
-      passed = this.processFilterEquality(
-        { payload: undefined, webhook: res },
-        child,
-        filterProcessingDetails
-      );
+      if (child.on === FilterPartTypeEnum.WEBHOOK) {
+        if (process.env.NODE_ENV === 'test') return true;
+        child.value = await this.compileFilter(child.value, variables, command.job);
+        const res = await this.getWebhookResponse(child, variables, command);
+        passed = this.processFilterEquality({ payload: undefined, webhook: res }, child, filterProcessingDetails);
+      }
+
+      if (
+        child.on === FilterPartTypeEnum.TENANT ||
+        child.on === FilterPartTypeEnum.PAYLOAD ||
+        child.on === FilterPartTypeEnum.SUBSCRIBER
+      ) {
+        child.value = await this.compileFilter(child.value, variables, command.job);
+
+        passed = this.processFilterEquality(variables, child, filterProcessingDetails);
+      }
+
+      if (child.on === FilterPartTypeEnum.IS_ONLINE || child.on === FilterPartTypeEnum.IS_ONLINE_IN_LAST) {
+        passed = await this.processIsOnline(child, command, filterProcessingDetails);
+      }
+
+      if (child.on === FilterPartTypeEnum.PREVIOUS_STEP) {
+        passed = await this.processPreviousStep(child, command, filterProcessingDetails);
+      }
+
+      return passed;
+    } catch (error) {
+      if (shouldPropagateWebhookFilterFailure(error)) {
+        throw error;
+      }
+
+      await this.recordFilterEvaluationError(error, child, command, filterProcessingDetails);
+
+      return false;
     }
+  }
 
-    if (
-      child.on === FilterPartTypeEnum.TENANT ||
-      child.on === FilterPartTypeEnum.PAYLOAD ||
-      child.on === FilterPartTypeEnum.SUBSCRIBER
-    ) {
-      child.value = await this.compileFilter(
-        child.value,
-        variables,
-        command.job
-      );
+  private async recordFilterEvaluationError(
+    error: unknown,
+    child: FilterParts,
+    command: ConditionsFilterCommand,
+    filterProcessingDetails: FilterProcessingDetails
+  ): Promise<void> {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const field = 'field' in child ? child.field : '';
+    const operator = 'operator' in child ? child.operator : FieldOperatorEnum.EQUAL;
+    const expected = 'value' in child ? `${child.value ?? ''}` : '';
 
-      passed = this.processFilterEquality(
-        variables,
-        child,
-        filterProcessingDetails
+    filterProcessingDetails.addCondition({
+      filter: FILTER_TO_LABEL[child.on],
+      field,
+      expected,
+      actual: errorMessage,
+      operator,
+      passed: false,
+    });
+
+    try {
+      await this.createExecutionDetails.execute(
+        CreateExecutionDetailsCommand.create({
+          ...CreateExecutionDetailsCommand.getDetailsFromJob(command.job),
+          detail: DetailEnum.PROCESSING_STEP_FILTER_ERROR,
+          source: ExecutionDetailsSourceEnum.INTERNAL,
+          status: ExecutionDetailsStatusEnum.FAILED,
+          isTest: false,
+          isRetry: false,
+          raw: JSON.stringify({ error: errorMessage, filterOn: child.on, field }),
+        })
       );
+    } catch {
+      // Execution detail logging is best-effort; the filter still fails closed.
     }
-
-    if (
-      child.on === FilterPartTypeEnum.IS_ONLINE ||
-      child.on === FilterPartTypeEnum.IS_ONLINE_IN_LAST
-    ) {
-      passed = await this.processIsOnline(
-        child,
-        command,
-        filterProcessingDetails
-      );
-    }
-
-    if (child.on === FilterPartTypeEnum.PREVIOUS_STEP) {
-      passed = await this.processPreviousStep(
-        child,
-        command,
-        filterProcessingDetails
-      );
-    }
-
-    return passed;
   }
   private async handleGroupFilters(
     filter: StepFilter,
@@ -489,21 +493,11 @@ export class ConditionsFilter extends Filter {
     filterProcessingDetails: FilterProcessingDetails
   ): Promise<boolean> {
     if (filter.value === FieldLogicalOperatorEnum.OR) {
-      return await this.handleOrFilters(
-        filter,
-        variables,
-        command,
-        filterProcessingDetails
-      );
+      return await this.handleOrFilters(filter, variables, command, filterProcessingDetails);
     }
 
     if (filter.value === FieldLogicalOperatorEnum.AND) {
-      return await this.handleAndFilters(
-        filter,
-        variables,
-        command,
-        filterProcessingDetails
-      );
+      return await this.handleAndFilters(filter, variables, command, filterProcessingDetails);
     }
 
     return false;
@@ -532,13 +526,9 @@ export class ConditionsFilter extends Filter {
   }
 
   private splitFilters(filter: StepFilter) {
-    const webhookFilters = filter.children.filter(
-      (childFilter) => childFilter.on === 'webhook'
-    );
+    const webhookFilters = filter.children.filter((childFilter) => childFilter.on === 'webhook');
 
-    const otherFilters = filter.children.filter(
-      (childFilter) => childFilter.on !== 'webhook'
-    );
+    const otherFilters = filter.children.filter((childFilter) => childFilter.on !== 'webhook');
 
     return { webhookFilters, otherFilters };
   }
@@ -563,11 +553,7 @@ export class ConditionsFilter extends Filter {
     ));
   }
 
-  private async compileFilter(
-    value: string,
-    variables: IFilterVariables,
-    job: IJob
-  ): Promise<string | undefined> {
+  private async compileFilter(value: string, variables: IFilterVariables, job: JobEntity): Promise<string | undefined> {
     try {
       return await this.compileTemplate.execute({
         template: value,
@@ -576,9 +562,9 @@ export class ConditionsFilter extends Filter {
         },
       });
     } catch (e: any) {
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(job),
+      await this.createExecutionDetails.execute(
+        CreateExecutionDetailsCommand.create({
+          ...CreateExecutionDetailsCommand.getDetailsFromJob(job),
           detail: DetailEnum.PROCESSING_STEP_FILTER_ERROR,
           source: ExecutionDetailsSourceEnum.INTERNAL,
           status: ExecutionDetailsStatusEnum.FAILED,
@@ -587,12 +573,10 @@ export class ConditionsFilter extends Filter {
           raw: JSON.stringify({ error: e?.message }),
         })
       );
-
-      return;
     }
   }
 
-  @CachedEntity({
+  @CachedResponse({
     builder: (command: { subscriberId: string; _environmentId: string }) =>
       buildSubscriberKey({
         _environmentId: command._environmentId,
@@ -613,11 +597,7 @@ export class ConditionsFilter extends Filter {
   }
 }
 
-const differenceIn = (
-  currentDate: Date,
-  lastDate: Date,
-  timeOperator: TimeOperatorEnum
-) => {
+const differenceIn = (currentDate: Date, lastDate: Date, timeOperator: TimeOperatorEnum) => {
   if (timeOperator === TimeOperatorEnum.MINUTES) {
     return differenceInMinutes(currentDate, lastDate);
   }

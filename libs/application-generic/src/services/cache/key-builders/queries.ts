@@ -1,13 +1,5 @@
-import {
-  buildEnvironmentScopedKeyById,
-  buildOrganizationScopedKey,
-} from './builder.scoped';
-import {
-  CacheKeyPrefixEnum,
-  CacheKeyTypeEnum,
-  IdentifierPrefixEnum,
-  QUERY_PREFIX,
-} from './identifiers';
+import { buildEnvironmentScopedKeyById, buildOrganizationScopedKey } from './builder.scoped';
+import { CacheKeyPrefixEnum, CacheKeyTypeEnum, IdentifierPrefixEnum, QUERY_PREFIX } from './identifiers';
 
 export const buildFeedKey = () => {
   const cache = (
@@ -25,13 +17,7 @@ export const buildFeedKey = () => {
       query: command,
     });
 
-  const invalidate = ({
-    subscriberId,
-    _environmentId,
-  }: {
-    subscriberId: string;
-    _environmentId: string;
-  }): string =>
+  const invalidate = ({ subscriberId, _environmentId }: { subscriberId: string; _environmentId: string }): string =>
     buildEnvironmentScopedKeyById({
       type: CacheKeyTypeEnum.QUERY,
       keyEntity: CacheKeyPrefixEnum.FEED,
@@ -62,47 +48,13 @@ export const buildMessageCountKey = () => {
       query: command,
     });
 
-  const invalidate = ({
-    subscriberId,
-    _environmentId,
-  }: {
-    subscriberId: string;
-    _environmentId: string;
-  }): string =>
+  const invalidate = ({ subscriberId, _environmentId }: { subscriberId: string; _environmentId: string }): string =>
     buildEnvironmentScopedKeyById({
       type: CacheKeyTypeEnum.QUERY,
       keyEntity: CacheKeyPrefixEnum.MESSAGE_COUNT,
       environmentId: _environmentId,
       identifierPrefix: IdentifierPrefixEnum.SUBSCRIBER_ID,
       identifier: subscriberId,
-    });
-
-  return {
-    cache,
-    invalidate,
-  };
-};
-
-export const buildIntegrationKey = () => {
-  const cache = (
-    command: Record<string, unknown> & { _organizationId: string }
-  ): string =>
-    buildQueryByOrganizationKey({
-      type: CacheKeyTypeEnum.QUERY,
-      keyEntity: CacheKeyPrefixEnum.INTEGRATION,
-      organizationId: command._organizationId,
-      query: command,
-    });
-
-  const invalidate = ({
-    _organizationId,
-  }: {
-    _organizationId: string;
-  }): string =>
-    buildOrganizationScopedKey({
-      type: CacheKeyTypeEnum.QUERY,
-      keyEntity: CacheKeyPrefixEnum.INTEGRATION,
-      organizationId: _organizationId,
     });
 
   return {
@@ -153,7 +105,5 @@ export const buildQueryByOrganizationKey = ({
 
 export interface IBuildNotificationTemplateByIdentifier {
   _environmentId: string;
-  identifiers:
-    | ({ id: string } & { triggerIdentifier?: string })
-    | ({ id?: string } & { triggerIdentifier: string });
+  identifiers: ({ id: string } & { triggerIdentifier?: string }) | ({ id?: string } & { triggerIdentifier: string });
 }

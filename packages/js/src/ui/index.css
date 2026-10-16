@@ -1,33 +1,26 @@
-/*
-! tailwindcss v3.4.4 | MIT License | https://tailwindcss.com
-*/ 
-
-/*
-1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
-2. Allow adding a border to an element by just adding a border-width. (https://github.com/tailwindcss/tailwindcss/pull/116)
-*/
-
 .novu {
-  :where(*, ::before, ::after) {
-    box-sizing: border-box; /* 1 */
-    border-width: 0; /* 2 */
-    border-style: solid; /* 2 */
-    border-color: #e5e7eb; /* 2 */
-  }
+  /* Motion tokens. `tailwind.config.js` maps the duration and easing utilities onto them; hosts may override them. */
+  --nv-motion-duration-fast: 120ms;
+  --nv-motion-duration-base: 160ms;
+  --nv-motion-duration-slow: 220ms;
+  --nv-motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --nv-motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --nv-motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --nv-motion-distance-sm: 4px;
+  --nv-motion-distance-md: 8px;
+  --nv-motion-distance-lg: 12px;
+  --nv-motion-reveal-delay: 60ms;
 
-  :where(::before, ::after) {
-    --tw-content: "";
+  :where(*),
+  :where(*) ::before,
+  :where(*) ::after,
+  :where(*)::before,
+  :where(*)::after {
+    box-sizing: border-box;
+    border-width: 0;
+    border-style: solid;
+    border-color: #e5e7eb;
   }
-
-/*
-1. Use a consistent sensible line-height in all browsers.
-2. Prevent adjustments of font size after orientation changes in iOS.
-3. Use a more readable tab size.
-4. Use the user's configured `sans` font-family by default.
-5. Use the user's configured `sans` font-feature-settings by default.
-6. Use the user's configured `sans` font-variation-settings by default.
-7. Disable tap highlights on iOS
-*/
 
   :where(html, :host) {
     line-height: 1.5; /* 1 */
@@ -35,28 +28,17 @@
     -moz-tab-size: 4; /* 3 */
     -o-tab-size: 4;
     tab-size: 4; /* 3 */
-    font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
-      "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"; /* 4 */
+    font-family:
+      ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"; /* 4 */
     font-feature-settings: normal; /* 5 */
     font-variation-settings: normal; /* 6 */
     -webkit-tap-highlight-color: transparent; /* 7 */
   }
 
-/*
-1. Remove the margin in all browsers.
-2. Inherit line-height from `html` so users can set them as a class directly on the `html` element.
-*/
-
   :where(body) {
     margin: 0; /* 1 */
     line-height: inherit; /* 2 */
   }
-
-/*
-1. Add the correct height in Firefox.
-2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)
-3. Ensure horizontal rules are visible by default.
-*/
 
   :where(hr) {
     height: 0; /* 1 */
@@ -64,67 +46,36 @@
     border-top-width: 1px; /* 3 */
   }
 
-/*
-Add the correct text decoration in Chrome, Edge, and Safari.
-*/
-
   :where(abbr:where([title])) {
     -webkit-text-decoration: underline dotted;
     text-decoration: underline dotted;
   }
-
-/*
-Remove the default font size and weight for headings.
-*/
 
   :where(h1, h2, h3, h4, h5, h6) {
     font-size: inherit;
     font-weight: inherit;
   }
 
-/*
-Reset links to optimize for opt-in styling instead of opt-out.
-*/
-
   :where(a) {
     color: inherit;
     text-decoration: inherit;
   }
 
-/*
-Add the correct font weight in Edge and Safari.
-*/
-
   :where(b, strong) {
     font-weight: bolder;
   }
 
-/*
-1. Use the user's configured `mono` font-family by default.
-2. Use the user's configured `mono` font-feature-settings by default.
-3. Use the user's configured `mono` font-variation-settings by default.
-4. Correct the odd `em` font sizing in all browsers.
-*/
-
   :where(code, kbd, samp, pre) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-      "Liberation Mono", "Courier New", monospace; /* 1 */
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; /* 1 */
     font-feature-settings: normal; /* 2 */
     font-variation-settings: normal; /* 3 */
     font-size: 1em; /* 4 */
   }
 
-/*
-Add the correct font size in all browsers.
-*/
-
   :where(small) {
     font-size: 80%;
   }
-
-/*
-Prevent `sub` and `sup` elements from affecting the line height in all browsers.
-*/
 
   :where(sub, sup) {
     font-size: 75%;
@@ -141,23 +92,11 @@ Prevent `sub` and `sup` elements from affecting the line height in all browsers.
     top: -0.5em;
   }
 
-/*
-1. Remove text indentation from table contents in Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=999088, https://bugs.webkit.org/show_bug.cgi?id=201297)
-2. Correct table border color inheritance in all Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=935729, https://bugs.webkit.org/show_bug.cgi?id=195016)
-3. Remove gaps between table borders by default.
-*/
-
   :where(table) {
     text-indent: 0; /* 1 */
     border-color: inherit; /* 2 */
     border-collapse: collapse; /* 3 */
   }
-
-/*
-1. Change the font styles in all browsers.
-2. Remove the margin in Firefox and Safari.
-3. Remove default padding in all browsers.
-*/
 
   :where(button, input, optgroup, select, textarea) {
     font-family: inherit; /* 1 */
@@ -172,101 +111,50 @@ Prevent `sub` and `sup` elements from affecting the line height in all browsers.
     padding: 0; /* 3 */
   }
 
-/*
-Remove the inheritance of text transform in Edge and Firefox.
-*/
-
   :where(button, select) {
     text-transform: none;
   }
 
-/*
-1. Correct the inability to style clickable types in iOS and Safari.
-2. Remove default button styles.
-*/
-
-  :where(
-      button,
-      input:where([type="button"]),
-      input:where([type="reset"]),
-      input:where([type="submit"])
-    ) {
+  :where(button, input:where([type="button"]), input:where([type="reset"]), input:where([type="submit"])) {
     -webkit-appearance: button; /* 1 */
     background-color: transparent; /* 2 */
     background-image: none; /* 2 */
   }
 
-/*
-Use the modern Firefox focus style for all focusable elements.
-*/
-
   :where(:-moz-focusring) {
     outline: auto;
   }
-
-/*
-Remove the additional `:invalid` styles in Firefox. (https://github.com/mozilla/gecko-dev/blob/2f9eacd9d3d995c937b4251a5557d95d494c9be1/layout/style/res/forms.css#L728-L737)
-*/
 
   :where(:-moz-ui-invalid) {
     box-shadow: none;
   }
 
-/*
-Add the correct vertical alignment in Chrome and Firefox.
-*/
-
   :where(progress) {
     vertical-align: baseline;
   }
 
-  /*
-Correct the cursor style of increment and decrement buttons in Safari.
-*/
-
-  :where(::-webkit-inner-spin-button, ::-webkit-outer-spin-button) {
+  :where(*)::-webkit-inner-spin-button,
+  :where(*)::-webkit-outer-spin-button {
     height: auto;
   }
-
-/*
-1. Correct the odd appearance in Chrome and Safari.
-2. Correct the outline style in Safari.
-*/
 
   :where([type="search"]) {
     -webkit-appearance: textfield; /* 1 */
     outline-offset: -2px; /* 2 */
   }
 
-/*
-Remove the inner padding in Chrome and Safari on macOS.
-*/
-
-  :where(::-webkit-search-decoration) {
+  :where(*)::-webkit-search-decoration {
     -webkit-appearance: none;
   }
 
-/*
-1. Correct the inability to style clickable types in iOS and Safari.
-2. Change font properties to `inherit` in Safari.
-*/
-
-  :where(::-webkit-file-upload-button) {
+  :where(*)::-webkit-file-upload-button {
     -webkit-appearance: button; /* 1 */
     font: inherit; /* 2 */
   }
 
-/*
-Add the correct display in Chrome and Safari.
-*/
-
   :where(summary) {
     display: list-item;
   }
-
-/*
-Removes the default spacing and border for appropriate elements.
-*/
 
   :where(blockquote, dl, dd, h1, h2, h3, h4, h5, h6, hr, figure, p, pre) {
     margin: 0;
@@ -287,77 +175,53 @@ Removes the default spacing and border for appropriate elements.
     padding: 0;
   }
 
-/*
-Reset default styling for dialogs.
-*/
   :where(dialog) {
     padding: 0;
   }
-
-/*
-Prevent resizing textareas horizontally by default.
-*/
 
   :where(textarea) {
     resize: vertical;
   }
 
-/*
-1. Reset the default placeholder opacity in Firefox. (https://github.com/tailwindlabs/tailwindcss/issues/3300)
-2. Set the default placeholder color to the user's configured gray 400 color.
-*/
-
-  :where(input::-moz-placeholder, textarea::-moz-placeholder) {
+  :where(input)::-moz-placeholder,
+  :where(textarea)::-moz-placeholder {
     opacity: 1; /* 1 */
     color: #9ca3af; /* 2 */
   }
 
-  :where(input::placeholder, textarea::placeholder) {
+  :where(input)::placeholder,
+  :where(textarea)::placeholder {
     opacity: 1; /* 1 */
     color: #9ca3af; /* 2 */
   }
-
-/*
-Set the default cursor for buttons.
-*/
 
   :where(button, [role="button"]) {
     cursor: pointer;
   }
 
-/*
-Make sure disabled buttons don't get the pointer cursor.
-*/
   :where(:disabled) {
     cursor: default;
   }
-
-/*
-1. Make replaced elements `display: block` by default. (https://github.com/mozdevs/cssremedy/issues/14)
-2. Add `vertical-align: middle` to align replaced elements more sensibly by default. (https://github.com/jensimmons/cssremedy/issues/14#issuecomment-634934210)
-   This can trigger a poorly considered lint error in some tools but is included by design.
-*/
 
   :where(img, svg, video, canvas, audio, iframe, embed, object) {
     display: block; /* 1 */
     vertical-align: middle; /* 2 */
   }
 
-/*
-Constrain images and videos to the parent width and preserve their intrinsic aspect ratio. (https://github.com/mozdevs/cssremedy/issues/14)
-*/
-
   :where(img, video) {
     max-width: 100%;
     height: auto;
   }
 
-  /* Make elements with the HTML hidden attribute stay hidden by default */
   :where([hidden]) {
     display: none;
   }
 
-  :where(*, ::before, ::after) {
+  :where(*),
+  :where(*) ::before,
+  :where(*) ::after,
+  :where(*)::before,
+  :where(*)::after {
     --tw-border-spacing-x: 0;
     --tw-border-spacing-y: 0;
     --tw-translate-x: 0;
@@ -367,19 +231,19 @@ Constrain images and videos to the parent width and preserve their intrinsic asp
     --tw-skew-y: 0;
     --tw-scale-x: 1;
     --tw-scale-y: 1;
-    --tw-pan-x:  ;
-    --tw-pan-y:  ;
-    --tw-pinch-zoom:  ;
+    --tw-pan-x: ;
+    --tw-pan-y: ;
+    --tw-pinch-zoom: ;
     --tw-scroll-snap-strictness: proximity;
-    --tw-gradient-from-position:  ;
-    --tw-gradient-via-position:  ;
-    --tw-gradient-to-position:  ;
-    --tw-ordinal:  ;
-    --tw-slashed-zero:  ;
-    --tw-numeric-figure:  ;
-    --tw-numeric-spacing:  ;
-    --tw-numeric-fraction:  ;
-    --tw-ring-inset:  ;
+    --tw-gradient-from-position: ;
+    --tw-gradient-via-position: ;
+    --tw-gradient-to-position: ;
+    --tw-ordinal: ;
+    --tw-slashed-zero: ;
+    --tw-numeric-figure: ;
+    --tw-numeric-spacing: ;
+    --tw-numeric-fraction: ;
+    --tw-ring-inset: ;
     --tw-ring-offset-width: 0px;
     --tw-ring-offset-color: #fff;
     --tw-ring-color: rgb(59 130 246 / 0.5);
@@ -387,31 +251,31 @@ Constrain images and videos to the parent width and preserve their intrinsic asp
     --tw-ring-shadow: 0 0 #0000;
     --tw-shadow: 0 0 #0000;
     --tw-shadow-colored: 0 0 #0000;
-    --tw-blur:  ;
-    --tw-brightness:  ;
-    --tw-contrast:  ;
-    --tw-grayscale:  ;
-    --tw-hue-rotate:  ;
-    --tw-invert:  ;
-    --tw-saturate:  ;
-    --tw-sepia:  ;
-    --tw-drop-shadow:  ;
-    --tw-backdrop-blur:  ;
-    --tw-backdrop-brightness:  ;
-    --tw-backdrop-contrast:  ;
-    --tw-backdrop-grayscale:  ;
-    --tw-backdrop-hue-rotate:  ;
-    --tw-backdrop-invert:  ;
-    --tw-backdrop-opacity:  ;
-    --tw-backdrop-saturate:  ;
-    --tw-backdrop-sepia:  ;
-    --tw-contain-size:  ;
-    --tw-contain-layout:  ;
-    --tw-contain-paint:  ;
-    --tw-contain-style:  ;
+    --tw-blur: ;
+    --tw-brightness: ;
+    --tw-contrast: ;
+    --tw-grayscale: ;
+    --tw-hue-rotate: ;
+    --tw-invert: ;
+    --tw-saturate: ;
+    --tw-sepia: ;
+    --tw-drop-shadow: ;
+    --tw-backdrop-blur: ;
+    --tw-backdrop-brightness: ;
+    --tw-backdrop-contrast: ;
+    --tw-backdrop-grayscale: ;
+    --tw-backdrop-hue-rotate: ;
+    --tw-backdrop-invert: ;
+    --tw-backdrop-opacity: ;
+    --tw-backdrop-saturate: ;
+    --tw-backdrop-sepia: ;
+    --tw-contain-size: ;
+    --tw-contain-layout: ;
+    --tw-contain-paint: ;
+    --tw-contain-style: ;
   }
 
-  :where(::backdrop) {
+  :where(*) ::backdrop {
     --tw-border-spacing-x: 0;
     --tw-border-spacing-y: 0;
     --tw-translate-x: 0;
@@ -421,19 +285,19 @@ Constrain images and videos to the parent width and preserve their intrinsic asp
     --tw-skew-y: 0;
     --tw-scale-x: 1;
     --tw-scale-y: 1;
-    --tw-pan-x:  ;
-    --tw-pan-y:  ;
-    --tw-pinch-zoom:  ;
+    --tw-pan-x: ;
+    --tw-pan-y: ;
+    --tw-pinch-zoom: ;
     --tw-scroll-snap-strictness: proximity;
-    --tw-gradient-from-position:  ;
-    --tw-gradient-via-position:  ;
-    --tw-gradient-to-position:  ;
-    --tw-ordinal:  ;
-    --tw-slashed-zero:  ;
-    --tw-numeric-figure:  ;
-    --tw-numeric-spacing:  ;
-    --tw-numeric-fraction:  ;
-    --tw-ring-inset:  ;
+    --tw-gradient-from-position: ;
+    --tw-gradient-via-position: ;
+    --tw-gradient-to-position: ;
+    --tw-ordinal: ;
+    --tw-slashed-zero: ;
+    --tw-numeric-figure: ;
+    --tw-numeric-spacing: ;
+    --tw-numeric-fraction: ;
+    --tw-ring-inset: ;
     --tw-ring-offset-width: 0px;
     --tw-ring-offset-color: #fff;
     --tw-ring-color: rgb(59 130 246 / 0.5);
@@ -441,31 +305,370 @@ Constrain images and videos to the parent width and preserve their intrinsic asp
     --tw-ring-shadow: 0 0 #0000;
     --tw-shadow: 0 0 #0000;
     --tw-shadow-colored: 0 0 #0000;
-    --tw-blur:  ;
-    --tw-brightness:  ;
-    --tw-contrast:  ;
-    --tw-grayscale:  ;
-    --tw-hue-rotate:  ;
-    --tw-invert:  ;
-    --tw-saturate:  ;
-    --tw-sepia:  ;
-    --tw-drop-shadow:  ;
-    --tw-backdrop-blur:  ;
-    --tw-backdrop-brightness:  ;
-    --tw-backdrop-contrast:  ;
-    --tw-backdrop-grayscale:  ;
-    --tw-backdrop-hue-rotate:  ;
-    --tw-backdrop-invert:  ;
-    --tw-backdrop-opacity:  ;
-    --tw-backdrop-saturate:  ;
-    --tw-backdrop-sepia:  ;
-    --tw-contain-size:  ;
-    --tw-contain-layout:  ;
-    --tw-contain-paint:  ;
-    --tw-contain-style:  ;
+    --tw-blur: ;
+    --tw-brightness: ;
+    --tw-contrast: ;
+    --tw-grayscale: ;
+    --tw-hue-rotate: ;
+    --tw-invert: ;
+    --tw-saturate: ;
+    --tw-sepia: ;
+    --tw-drop-shadow: ;
+    --tw-backdrop-blur: ;
+    --tw-backdrop-brightness: ;
+    --tw-backdrop-contrast: ;
+    --tw-backdrop-grayscale: ;
+    --tw-backdrop-hue-rotate: ;
+    --tw-backdrop-invert: ;
+    --tw-backdrop-opacity: ;
+    --tw-backdrop-saturate: ;
+    --tw-backdrop-sepia: ;
+    --tw-contain-size: ;
+    --tw-contain-layout: ;
+    --tw-contain-paint: ;
+    --tw-contain-style: ;
+  }
+
+  /* Scrollbar */
+  scrollbar-color: var(--nv-color-secondary-foreground-alpha-300) transparent;
+
+  /* Webkit Safari */
+  ::-webkit-scrollbar {
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--nv-color-secondary-foreground-alpha-300);
+    border-radius: 0.25rem;
+    background-clip: "padding-box";
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background-color: transparent;
+  }
+
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Hide spin buttons in Firefox */
+  input[type="number"] {
+    -moz-appearance: textfield;
   }
 }
 
-@tailwind base;
+/*
+ * Motion modes. Every `.novu` root renders `data-nv-motion` from `appearance.animations` and the OS preference.
+ * `reduced` keeps fades only: enter/exit keyframes lose their offsets and scale, and transforms or sizes change
+ * without a transition. `off` zeroes the tokens, so nothing that runs on them animates.
+ */
+.novu[data-nv-motion="reduced"] {
+  --nv-motion-duration-base: var(--nv-motion-duration-fast);
+  --nv-motion-duration-slow: var(--nv-motion-duration-fast);
+}
+
+.novu[data-nv-motion="reduced"] *,
+.novu[data-nv-motion="reduced"] *::before,
+.novu[data-nv-motion="reduced"] *::after {
+  --tw-enter-translate-x: 0 !important;
+  --tw-enter-translate-y: 0 !important;
+  --tw-enter-scale: 1 !important;
+  --tw-enter-rotate: 0 !important;
+  --tw-exit-translate-x: 0 !important;
+  --tw-exit-translate-y: 0 !important;
+  --tw-exit-scale: 1 !important;
+  --tw-exit-rotate: 0 !important;
+  transition-property:
+    color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, opacity, box-shadow !important;
+}
+
+.novu[data-nv-motion="off"] {
+  --nv-motion-duration-fast: 0ms;
+  --nv-motion-duration-base: 0ms;
+  --nv-motion-duration-slow: 0ms;
+  --nv-motion-reveal-delay: 0ms;
+}
+
+/*
+ * The recipes' own keyframes, driven by the same variables as tailwindcss-animate (so the `reduced` rule above
+ * neutralises both), but named so a host's `@keyframes enter` can't replace them.
+ */
+@keyframes nv-enter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0)
+      scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1))
+      rotate(var(--tw-enter-rotate, 0));
+  }
+}
+
+@keyframes nv-exit {
+  to {
+    opacity: var(--tw-exit-opacity, 1);
+    transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0)
+      scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1))
+      rotate(var(--tw-exit-rotate, 0));
+  }
+}
+
+/*
+ * `RollingText` slides its values with `top`, not a transform, and fades them with `color`, not opacity. Animating a
+ * transform or opacity draws the text on its own compositing layer, rasterised differently from the rest of the
+ * badge, and the number visibly settles when that layer is dropped at the end of the roll.
+ */
+@keyframes nv-roll-in {
+  from {
+    top: var(--nv-roll-from);
+  }
+}
+
+@keyframes nv-roll-out {
+  to {
+    top: var(--nv-roll-to);
+  }
+}
+
+@keyframes nv-roll-fade-in {
+  from {
+    color: transparent;
+  }
+}
+
+@keyframes nv-roll-fade-out {
+  to {
+    color: transparent;
+  }
+}
+
+/* biome-ignore lint/suspicious/noUnknownAtRules: tailwind */
 @tailwind components;
+/* biome-ignore lint/suspicious/noUnknownAtRules: tailwind */
 @tailwind utilities;
+
+/*
+ * Motion recipes. A presence-driven element renders `data-state="open"` or `"closed"` (see `createPresence`):
+ * `open` plays `nv-enter`, `closed` plays `nv-exit` and keeps its last frame until the element is removed, and no
+ * state means no animation. Each recipe sets every `--tw-enter/exit-*` variable it uses, so nested recipes don't
+ * inherit them; don't combine a recipe with the `nt-animate-in/out` utilities, which reset those variables.
+ *
+ * No selector weighs more than a single class: states, sides and ancestors sit inside `:where()`. A host's class or
+ * `appearance.elements` style on the same element therefore overrides the motion (`animation: none`), because the
+ * host's styles load after these. Among the rules below, a later one wins over an earlier one, so order matters.
+ * The one exception is the hover reveal, which keeps the weight of the `group-hover` utilities it replaced.
+ * `recipes.test.ts` holds this line.
+ */
+/* biome-ignore lint/suspicious/noUnknownAtRules: tailwind */
+@layer components {
+  .nt-motion-panel,
+  .nt-motion-menu,
+  .nt-motion-tooltip,
+  .nt-motion-pop,
+  .nt-motion-pill,
+  .nt-motion-fade,
+  .nt-motion-page {
+    --tw-enter-opacity: 0;
+    --tw-enter-scale: 1;
+    --tw-enter-rotate: 0;
+    --tw-enter-translate-x: 0;
+    --tw-enter-translate-y: 0;
+    --tw-exit-opacity: 0;
+    --tw-exit-scale: 1;
+    --tw-exit-rotate: 0;
+    --tw-exit-translate-x: 0;
+    --tw-exit-translate-y: 0;
+  }
+
+  /* Floating layers grow out of their trigger and shrink back into it. */
+  .nt-motion-panel,
+  .nt-motion-menu,
+  .nt-motion-tooltip {
+    --nv-motion-offset: var(--nv-motion-distance-sm);
+    --tw-enter-scale: 0.96;
+    --tw-exit-scale: 0.96;
+    transform-origin: var(--nv-floating-origin, center);
+  }
+
+  .nt-motion-panel {
+    --nv-motion-offset: var(--nv-motion-distance-md);
+    --tw-enter-scale: 0.97;
+    --tw-exit-scale: 0.98;
+  }
+
+  .nt-motion-tooltip {
+    --nv-motion-offset: 2px;
+  }
+
+  :where(.nt-motion-panel, .nt-motion-menu, .nt-motion-tooltip)[data-side="bottom"] {
+    --tw-enter-translate-y: calc(-1 * var(--nv-motion-offset));
+    --tw-exit-translate-y: calc(-1 * var(--nv-motion-offset));
+  }
+
+  :where(.nt-motion-panel, .nt-motion-menu, .nt-motion-tooltip)[data-side="top"] {
+    --tw-enter-translate-y: var(--nv-motion-offset);
+    --tw-exit-translate-y: var(--nv-motion-offset);
+  }
+
+  :where(.nt-motion-panel, .nt-motion-menu, .nt-motion-tooltip)[data-side="left"] {
+    --tw-enter-translate-x: var(--nv-motion-offset);
+    --tw-exit-translate-x: var(--nv-motion-offset);
+  }
+
+  :where(.nt-motion-panel, .nt-motion-menu, .nt-motion-tooltip)[data-side="right"] {
+    --tw-enter-translate-x: calc(-1 * var(--nv-motion-offset));
+    --tw-exit-translate-x: calc(-1 * var(--nv-motion-offset));
+  }
+
+  /* Dots, badges and swapped icons scale in from nothing (or from `--nv-motion-pop-scale`). */
+  .nt-motion-pop {
+    --tw-enter-scale: var(--nv-motion-pop-scale, 0);
+    --tw-exit-scale: var(--nv-motion-pop-scale, 0);
+  }
+
+  .nt-motion-pill {
+    --tw-enter-translate-y: calc(-1 * var(--nv-motion-distance-sm));
+    --tw-exit-translate-y: calc(-1 * var(--nv-motion-distance-sm));
+  }
+
+  /*
+   * Notifications <-> Preferences, and tab panels, fade through: the old one fades out as it shifts away, then the new
+   * one fades in from the side it came from. They share one grid cell but are never visible together, so two lists
+   * never blend into each other. A tab panel says `active`/`inactive` where a page says `open`/`closed`.
+   */
+  .nt-motion-page {
+    --tw-enter-translate-x: var(--nv-motion-distance-md);
+    --tw-exit-translate-x: calc(-1 * var(--nv-motion-distance-sm));
+  }
+
+  :where(.nt-motion-page)[data-direction="backward"] {
+    --tw-enter-translate-x: calc(-1 * var(--nv-motion-distance-md));
+    --tw-exit-translate-x: var(--nv-motion-distance-sm);
+  }
+
+  /*
+   * Text that rolls to a new value, like an odometer: the new value comes in from below (`up`) or from above (`down`)
+   * while the old one leaves the other way, on top of it and out of the flow. `RollingText` positions and clips them;
+   * see `nv-roll-in` for why they move with `top`. The distance is one line (`1lh`), the height of the wrapper: the
+   * new value is relatively positioned in that auto-height wrapper, where `top: 100%` would count as `auto`.
+   */
+  .nt-motion-roll {
+    --nv-roll-from: 1lh;
+    --nv-roll-to: -1lh;
+  }
+
+  :where(.nt-motion-roll)[data-direction="down"] {
+    --nv-roll-from: -1lh;
+    --nv-roll-to: 1lh;
+  }
+
+  /* Presence states. */
+  :where(
+      .nt-motion-panel,
+      .nt-motion-menu,
+      .nt-motion-tooltip,
+      .nt-motion-pop,
+      .nt-motion-pill,
+      .nt-motion-fade
+    )[data-state="open"] {
+    animation: nv-enter var(--nv-motion-duration-base) var(--nv-motion-ease-enter);
+  }
+
+  :where(.nt-motion-panel)[data-state="open"] {
+    animation-duration: var(--nv-motion-duration-slow);
+  }
+
+  :where(.nt-motion-tooltip)[data-state="open"] {
+    animation-duration: var(--nv-motion-duration-fast);
+  }
+
+  /*
+   * The new page or panel waits, invisible, until the old one has faded out (the exit below takes `fast`). The first
+   * one has no direction yet and appears with the Inbox instead.
+   */
+  :where(.nt-motion-page[data-direction])[data-state="open"],
+  :where(.nt-motion-page[data-direction])[data-state="active"] {
+    z-index: 1;
+    animation: nv-enter var(--nv-motion-duration-base) var(--nv-motion-ease-enter) var(--nv-motion-duration-fast)
+      backwards;
+  }
+
+  :where(
+      .nt-motion-panel,
+      .nt-motion-menu,
+      .nt-motion-tooltip,
+      .nt-motion-pop,
+      .nt-motion-pill,
+      .nt-motion-fade,
+      .nt-motion-page
+    )[data-state="closed"],
+  :where(.nt-motion-page)[data-state="inactive"] {
+    animation: nv-exit var(--nv-motion-duration-fast) var(--nv-motion-ease-exit) forwards;
+    pointer-events: none;
+  }
+
+  /* Both values of a roll move together, as one strip. */
+  :where(.nt-motion-roll)[data-state="open"] {
+    animation: nv-roll-in var(--nv-motion-duration-slow) var(--nv-motion-ease-standard);
+  }
+
+  :where(.nt-motion-roll)[data-state="closed"] {
+    animation: nv-roll-out var(--nv-motion-duration-slow) var(--nv-motion-ease-standard) forwards;
+  }
+
+  /* With reduced motion the values don't move: they crossfade in place. */
+  :where([data-nv-motion="reduced"] .nt-motion-roll)[data-state="open"] {
+    animation-name: nv-roll-fade-in;
+  }
+
+  :where([data-nv-motion="reduced"] .nt-motion-roll)[data-state="closed"] {
+    animation-name: nv-roll-fade-out;
+  }
+
+  /* Content that fades in when it replaces other content (a calendar month) marks itself with `data-animate`. */
+  :where(.nt-motion-fade)[data-animate] {
+    animation: nv-enter var(--nv-motion-duration-base) var(--nv-motion-ease-enter);
+  }
+
+  /* A list whose items fade in together when they replace a placeholder. */
+  :where(.nt-motion-fade-children)[data-animate] > * {
+    --tw-enter-opacity: 0;
+    --tw-enter-scale: 1;
+    --tw-enter-rotate: 0;
+    --tw-enter-translate-x: 0;
+    --tw-enter-translate-y: 0;
+    animation: nv-enter var(--nv-motion-duration-base) var(--nv-motion-ease-enter);
+  }
+
+  /*
+   * The default actions of an item: revealed on hover, on keyboard focus, and while one of their menus is open. Not on
+   * `:focus-within`: a clicked button keeps the focus, which would pin the actions to that item after the pointer left.
+   * `:has()` sits inside the forgiving `:is()`, so a browser without it still keeps the other selectors.
+   */
+  .nt-motion-reveal {
+    opacity: 0;
+    transform: translateX(var(--nv-motion-distance-sm));
+    transition-property: opacity, transform;
+    transition-duration: var(--nv-motion-duration-fast);
+    transition-timing-function: var(--nv-motion-ease-standard);
+    transition-delay: var(--nv-motion-reveal-delay);
+  }
+
+  @media (hover: hover) {
+    .nt-motion-reveal {
+      pointer-events: none;
+    }
+  }
+
+  .nt-group:hover .nt-motion-reveal,
+  .nt-group:is(:focus-visible, :has(:focus-visible)) .nt-motion-reveal,
+  .nt-motion-reveal:is(:has([data-open="true"])) {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    transition-duration: var(--nv-motion-duration-base);
+    transition-delay: 0s;
+  }
+}

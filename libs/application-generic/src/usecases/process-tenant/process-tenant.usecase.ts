@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { TenantRepository, TenantEntity } from '@novu/dal';
+import { TenantEntity, TenantRepository } from '@novu/dal';
 import { ITenantDefine } from '@novu/shared';
 import { isEqual } from 'lodash';
 
 import { InstrumentUsecase } from '../../instrumentation';
-import { ProcessTenantCommand } from './process-tenant.command';
-import { UpdateTenant, UpdateTenantCommand } from '../update-tenant';
 import { CreateTenant, CreateTenantCommand } from '../create-tenant';
+import { UpdateTenant, UpdateTenantCommand } from '../update-tenant';
+import { ProcessTenantCommand } from './process-tenant.command';
 
 @Injectable()
 export class ProcessTenant {
@@ -17,20 +17,13 @@ export class ProcessTenant {
   ) {}
 
   @InstrumentUsecase()
-  public async execute(
-    command: ProcessTenantCommand
-  ): Promise<TenantEntity | undefined> {
+  public async execute(command: ProcessTenantCommand): Promise<TenantEntity | undefined> {
     const { environmentId, organizationId, userId, tenant } = command;
 
     let tenantEntity;
 
     try {
-      tenantEntity = await this.getTenant(
-        environmentId,
-        organizationId,
-        userId,
-        tenant
-      );
+      tenantEntity = await this.getTenant(environmentId, organizationId, userId, tenant);
     } catch (e) {
       tenantEntity = null;
     }
@@ -71,12 +64,7 @@ export class ProcessTenant {
       );
     }
 
-    return await this.createTenant(
-      environmentId,
-      organizationId,
-      userId,
-      tenantPayload
-    );
+    return await this.createTenant(environmentId, organizationId, userId, tenantPayload);
   }
 
   private async createTenant(
@@ -97,23 +85,14 @@ export class ProcessTenant {
     );
   }
 
-  private async getTenantByIdentifier({
-    identifier,
-    _environmentId,
-  }: {
-    identifier: string;
-    _environmentId: string;
-  }) {
+  private async getTenantByIdentifier({ identifier, _environmentId }: { identifier: string; _environmentId: string }) {
     return await this.tenantRepository.findOne({
       _environmentId,
       identifier,
     });
   }
 
-  private tenantNeedUpdate(
-    tenant: TenantEntity,
-    tenantPayload: Partial<TenantEntity>
-  ): boolean {
+  private tenantNeedUpdate(tenant: TenantEntity, tenantPayload: Partial<TenantEntity>): boolean {
     return (
       !!(tenantPayload?.name && tenant?.name !== tenantPayload?.name) ||
       !!(tenantPayload?.data && !isEqual(tenant?.data, tenantPayload?.data))

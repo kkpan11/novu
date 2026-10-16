@@ -1,7 +1,7 @@
-import { IsDefined, IsEmail, IsNotEmpty } from 'class-validator';
-import * as sinon from 'sinon';
-import * as Sentry from '@sentry/node';
 import { BadRequestException } from '@nestjs/common';
+import * as Sentry from '@sentry/node';
+import { IsDefined, IsEmail, IsNotEmpty } from 'class-validator';
+import sinon from 'sinon';
 
 import { BaseCommand } from './base.command';
 
@@ -15,12 +15,12 @@ export class TestCommand extends BaseCommand {
   password: string;
 }
 
-describe('BaseCommand', function () {
+describe('BaseCommand', () => {
   beforeAll(() => {
     sinon.stub(Sentry, 'addBreadcrumb');
   });
 
-  it('should throw BadRequestException with error messages when field values are not valid', async function () {
+  it('should throw BadRequestException with error messages when field values are not valid', async () => {
     try {
       TestCommand.create({ email: undefined, password: undefined });
       expect(false).toBeTruthy();
@@ -38,7 +38,7 @@ describe('BaseCommand', function () {
     }
   });
 
-  it('should throw BadRequestException with error message when only one field is not valid', async function () {
+  it('should throw BadRequestException with error message when only one field is not valid', async () => {
     try {
       TestCommand.create({ email: 'test@test.com', password: undefined });
       expect(false).toBeTruthy();
@@ -51,7 +51,7 @@ describe('BaseCommand', function () {
     }
   });
 
-  it('should return object of type that extends the base', async function () {
+  it('should return object of type that extends the base', async () => {
     const obj = { email: 'test@test.com', password: 'P@ssw0rd' };
     const res = TestCommand.create(obj);
 

@@ -1,17 +1,25 @@
-import { Test } from '@nestjs/testing';
-
-import { WebSocketsQueueService } from './web-sockets-queue.service';
-import { BullMqService } from '../bull-mq';
 import { WorkflowInMemoryProviderService } from '../in-memory-provider';
-import { IWebSocketJobDto } from '../../dtos';
+import {
+  createPinoLoggerMock,
+  createSocketWorkerServiceMock,
+  createSqsServiceMock,
+} from '../queue-service-mocks.test-helpers';
+import { WebSocketsQueueService } from './web-sockets-queue.service';
 
 let webSocketsQueueService: WebSocketsQueueService;
+
+const mockSocketWorkerService = createSocketWorkerServiceMock();
+const mockSqsService = createSqsServiceMock();
+const mockLogger = createPinoLoggerMock();
 
 describe('WebSockets Queue service', () => {
   describe('General', () => {
     beforeAll(async () => {
       webSocketsQueueService = new WebSocketsQueueService(
-        new WorkflowInMemoryProviderService()
+        new WorkflowInMemoryProviderService(),
+        mockSocketWorkerService,
+        mockSqsService,
+        mockLogger
       );
       await webSocketsQueueService.queue.obliterate();
     });
@@ -27,12 +35,7 @@ describe('WebSockets Queue service', () => {
     it('should be initialised properly', async () => {
       expect(webSocketsQueueService).toBeDefined();
       expect(Object.keys(webSocketsQueueService)).toEqual(
-        expect.arrayContaining([
-          'topic',
-          'DEFAULT_ATTEMPTS',
-          'instance',
-          'queue',
-        ])
+        expect.arrayContaining(['topic', 'DEFAULT_ATTEMPTS', 'instance', 'queue'])
       );
       expect(webSocketsQueueService.DEFAULT_ATTEMPTS).toEqual(3);
       expect(webSocketsQueueService.topic).toEqual('ws_socket_queue');
@@ -127,7 +130,10 @@ describe('WebSockets Queue service', () => {
       process.env.IS_IN_MEMORY_CLUSTER_MODE_ENABLED = 'true';
 
       webSocketsQueueService = new WebSocketsQueueService(
-        new WorkflowInMemoryProviderService()
+        new WorkflowInMemoryProviderService(),
+        mockSocketWorkerService,
+        mockSqsService,
+        mockLogger
       );
       await webSocketsQueueService.queue.obliterate();
     });
@@ -138,9 +144,7 @@ describe('WebSockets Queue service', () => {
     });
 
     it('should have prefix in cluster mode', async () => {
-      expect(webSocketsQueueService.queue.opts.prefix).toEqual(
-        '{ws_socket_queue}'
-      );
+      expect(webSocketsQueueService.queue.opts.prefix).toEqual('{ws_socket_queue}');
     });
   });
 });

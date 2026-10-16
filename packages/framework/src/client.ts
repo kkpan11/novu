@@ -1,7 +1,7 @@
-import { JSONSchemaFaker } from 'json-schema-faker';
+import { jsonrepair } from 'jsonrepair';
 import { Liquid } from 'liquidjs';
-import ora from 'ora';
 
+import { ChannelStepEnum, PostActionEnum } from './constants';
 import {
   ExecutionEventControlsInvalidError,
   ExecutionEventPayloadInvalidError,
@@ -10,14 +10,21 @@ import {
   ExecutionStateCorruptError,
   ExecutionStateOutputInvalidError,
   ExecutionStateResultInvalidError,
+  isFrameworkError,
   ProviderExecutionFailedError,
   ProviderNotFoundError,
+  StepControlCompilationFailedError,
+  StepExecutionFailedError,
   StepNotFoundError,
-  WorkflowAlreadyExistsError,
   WorkflowNotFoundError,
 } from './errors';
+import { mockSchema } from './jsonSchemaFaker';
+import type { Agent } from './resources/agent';
+import { resolveCardContent } from './resources/agent/resolve-card-content';
+import { prettyPrintDiscovery } from './resources/workflow/pretty-print-discovery';
 import type {
   ActionStep,
+  Awaitable,
   ClientOptions,
   CodeResult,
   DiscoverOutput,
@@ -26,62 +33,108 @@ import type {
   DiscoverWorkflowOutput,
   Event,
   ExecuteOutput,
+  FromSchema,
   HealthCheck,
+  Logger,
   Schema,
   Skip,
+  State,
+  StepContext,
+  StepOptions,
+  StepType,
   ValidationError,
+  Workflow,
 } from './types';
-import { EMOJI, log } from './utils';
-import { transformSchema, validateData } from './validators';
-import { FRAMEWORK_VERSION, SDK_VERSION } from './version';
+import { WithPassthrough } from './types/provider.types';
+import { EMOJI, log, resolveApiUrl, resolveSecretKey, sanitizeHtmlInObject } from './utils';
+import { renderLiquidJson } from './utils/compile-json-control-values';
+import { createLiquidEngine } from './utils/liquid.utils';
+import {
+  expandJsonStringControlValues,
+  normalizeControlData,
+  restoreJsonStringControlValues,
+} from './utils/normalize-controls.utils';
+import { deepMerge } from './utils/object.utils';
+import { validateData } from './validators';
 
-/**
- * We want to respond with a consistent string value for preview
- */
-JSONSchemaFaker.random.shuffle = function () {
-  return ['[placeholder]'];
-};
+type ProviderOverrideMap = Partial<Record<string, DiscoverProviderOutput['resolve']>>;
 
-JSONSchemaFaker.option({
-  useDefaultValue: true,
-  alwaysFakeOptionals: true,
-});
+function isProviderOverrideMap(value: object): value is ProviderOverrideMap {
+  return Object.values(value).every((entry) => entry === undefined || typeof entry === 'function');
+}
+
+function readProviderOverride<T_ControlSchema extends Schema, T_Controls extends Record<string, unknown>>(
+  options: StepOptions<T_ControlSchema, T_Controls> | undefined,
+  providerType: string
+): DiscoverProviderOutput['resolve'] | undefined {
+  if (!options || !('providers' in options)) {
+    return undefined;
+  }
+
+  const providers = options.providers;
+
+  if (typeof providers !== 'object' || providers === null) {
+    return undefined;
+  }
+
+  if (!isProviderOverrideMap(providers)) {
+    return undefined;
+  }
+
+  return providers[providerType];
+}
+
+function asActionStep<T_Outputs extends Record<string, unknown>, T_Result extends Record<string, unknown>>(
+  step: <T_ControlSchema extends Schema, T_Controls extends Record<string, unknown> = FromSchema<T_ControlSchema>>(
+    stepId: string,
+    stepResolve: (controls: T_Controls) => Awaitable<T_Outputs>,
+    options?: StepOptions<T_ControlSchema, T_Controls>
+  ) => Promise<(T_Result & StepContext) | undefined>
+): ActionStep<T_Outputs, T_Result> {
+  return step as ActionStep<T_Outputs, T_Result>;
+}
 
 function isRuntimeInDevelopment() {
-  return process.env.NODE_ENV === 'development';
+  return ['development', undefined, 'dev'].includes(process.env.NODE_ENV);
 }
 
 export class Client {
-  private discoveredWorkflows: Array<DiscoverWorkflowOutput> = [];
+  private discoveredWorkflows = new Map<string, DiscoverWorkflowOutput>();
+  private discoverWorkflowPromises = new Map<string, Promise<void>>();
+  private registeredAgents = new Map<string, Agent>();
 
-  private templateEngine = new Liquid();
+  private templateEngine: Liquid;
 
-  public secretKey?: string;
+  public secretKey: string;
+
+  public apiUrl: string;
 
   public version: string = SDK_VERSION;
 
   public strictAuthentication: boolean;
 
+  public verbose: boolean;
+
+  public logger: Logger;
+
   constructor(options?: ClientOptions) {
     const builtOpts = this.buildOptions(options);
+    this.apiUrl = builtOpts.apiUrl;
     this.secretKey = builtOpts.secretKey;
     this.strictAuthentication = builtOpts.strictAuthentication;
+    this.verbose = builtOpts.verbose;
+    this.logger = builtOpts.logger;
+    this.templateEngine = createLiquidEngine();
   }
 
   private buildOptions(providedOptions?: ClientOptions) {
-    const builtConfiguration: { secretKey?: string; strictAuthentication: boolean } = {
-      secretKey: undefined,
-      strictAuthentication: isRuntimeInDevelopment() ? false : true,
+    const builtConfiguration: Required<ClientOptions> = {
+      apiUrl: resolveApiUrl(providedOptions?.apiUrl),
+      secretKey: resolveSecretKey(providedOptions?.secretKey),
+      strictAuthentication: !isRuntimeInDevelopment(),
+      verbose: isRuntimeInDevelopment(),
+      logger: console,
     };
-
-    builtConfiguration.secretKey =
-      providedOptions?.secretKey || process.env.NOVU_SECRET_KEY || process.env.NOVU_API_KEY;
-
-    if (!isRuntimeInDevelopment() && !builtConfiguration.secretKey) {
-      throw new Error(
-        'Missing secret key. Set the NOVU_SECRET_KEY environment variable or pass `secretKey` to the client options.'
-      );
-    }
 
     if (providedOptions?.strictAuthentication !== undefined) {
       builtConfiguration.strictAuthentication = providedOptions.strictAuthentication;
@@ -89,22 +142,74 @@ export class Client {
       builtConfiguration.strictAuthentication = process.env.NOVU_STRICT_AUTHENTICATION_ENABLED === 'true';
     }
 
+    if (providedOptions?.verbose !== undefined) {
+      builtConfiguration.verbose = providedOptions.verbose;
+    }
+
+    if (providedOptions?.logger !== undefined) {
+      builtConfiguration.logger = providedOptions.logger;
+    }
+
     return builtConfiguration;
   }
 
-  public addWorkflows(workflows: Array<DiscoverWorkflowOutput>) {
+  private log(...args: Parameters<Logger['info']>): void {
+    if (this.verbose) {
+      this.logger.info(...args);
+    }
+  }
+
+  /**
+   * Adds workflows to the client.
+   *
+   * A locking mechanism is used to ensure that duplicate workflows are not added.
+   *
+   * @param workflows - The workflows to add.
+   */
+  public async addWorkflows(workflows: Array<Workflow>): Promise<void> {
     for (const workflow of workflows) {
-      if (this.discoveredWorkflows.some((existing) => existing.workflowId === workflow.workflowId)) {
-        throw new WorkflowAlreadyExistsError(workflow.workflowId);
-      } else {
-        this.discoveredWorkflows.push(workflow);
+      if (this.discoveredWorkflows.has(workflow.id)) {
+        continue;
       }
+
+      const existingPromise = this.discoverWorkflowPromises.get(workflow.id);
+      if (existingPromise) {
+        // Wait for the existing promise to resolve if the workflow is already being added
+        await existingPromise;
+        continue;
+      }
+
+      const workflowPromise = this.addWorkflow(workflow);
+      this.discoverWorkflowPromises.set(workflow.id, workflowPromise);
+
+      await workflowPromise;
+    }
+  }
+
+  public addAgents(agents: Array<Agent>): void {
+    for (const a of agents) {
+      this.registeredAgents.set(a.id, a);
+    }
+  }
+
+  public getAgent(agentId: string): Agent | undefined {
+    return this.registeredAgents.get(agentId);
+  }
+
+  private async addWorkflow(workflow: Workflow): Promise<void> {
+    try {
+      const definition = await workflow.discover();
+      prettyPrintDiscovery(definition, this.verbose, this.logger);
+      this.discoveredWorkflows.set(workflow.id, definition);
+    } finally {
+      this.discoverWorkflowPromises.delete(workflow.id);
     }
   }
 
   public healthCheck(): HealthCheck {
-    const workflowCount = this.discoveredWorkflows.length;
-    const stepCount = this.discoveredWorkflows.reduce((acc, workflow) => acc + workflow.steps.length, 0);
+    const discoveredWorkflows = this.getRegisteredWorkflows();
+    const workflowCount = discoveredWorkflows.length;
+    const stepCount = discoveredWorkflows.reduce((acc, workflow) => acc + workflow.steps.length, 0);
 
     return {
       status: 'ok',
@@ -118,7 +223,7 @@ export class Client {
   }
 
   private getWorkflow(workflowId: string): DiscoverWorkflowOutput {
-    const foundWorkflow = this.discoveredWorkflows.find((workflow) => workflow.workflowId === workflowId);
+    const foundWorkflow = this.discoveredWorkflows.get(workflowId);
 
     if (foundWorkflow) {
       return foundWorkflow;
@@ -140,12 +245,13 @@ export class Client {
   }
 
   private getRegisteredWorkflows(): Array<DiscoverWorkflowOutput> {
-    return this.discoveredWorkflows;
+    return Array.from(this.discoveredWorkflows.values());
   }
 
   public discover(): DiscoverOutput {
     return {
       workflows: this.getRegisteredWorkflows(),
+      agents: Array.from(this.registeredAgents.keys()).map((id) => ({ agentId: id })),
     };
   }
 
@@ -158,10 +264,17 @@ export class Client {
    * @returns mocked data
    */
   private mock(schema: Schema): Record<string, unknown> {
-    return JSONSchemaFaker.generate(transformSchema(schema) as any) as Record<string, unknown>;
+    try {
+      return mockSchema(schema) as Record<string, unknown>;
+    } catch (error) {
+      // If JSONSchemaFaker fails, return an empty object as fallback
+      // This prevents the preview from crashing on complex schemas
+      this.logger.warn('Failed to mock schema, returning empty object:', error);
+      return {};
+    }
   }
 
-  private async validate<T>(
+  private async validate<T extends Record<string, unknown>>(
     data: T,
     schema: Schema,
     component: 'event' | 'step' | 'provider',
@@ -187,7 +300,7 @@ export class Client {
           throw new Error(`Invalid component: '${component}'`);
       }
     } else {
-      return result.data;
+      return result.data as T;
     }
   }
 
@@ -257,28 +370,53 @@ export class Client {
     }
   }
 
-  private executeStepFactory<T, U>(event: Event, setResult: (result: any) => void): ActionStep<T, U> {
-    return async (stepId, stepResolve, options) => {
+  private executeStepFactory<T_Outputs extends Record<string, unknown>, T_Result extends Record<string, unknown>>(
+    event: Event,
+    setResult: (result: Pick<ExecuteOutput, 'outputs' | 'providers' | 'options'>) => void,
+    hasResult: () => boolean
+  ): ActionStep<T_Outputs, T_Result> {
+    return asActionStep<T_Outputs, T_Result>(async (stepId, stepResolve, options) => {
+      if (hasResult()) {
+        /*
+         * Exit the execution early if the result has already been set.
+         * This is to ensure that we don't evaluate code in steps after the provided stepId.
+         */
+        return;
+      }
+
       const step = this.getStep(event.workflowId, stepId);
-      const eventClone = clone<Event>(event);
-      const controls = await this.createStepControls(step, eventClone);
-      const isPreview = event.action === 'preview';
+      const isPreview = event.action === PostActionEnum.PREVIEW;
 
-      if (!isPreview && (await this.shouldSkip(options?.skip, controls))) {
-        const skippedResult = { options: { skip: true } };
-        setResult(skippedResult);
+      // Only evaluate a skip condition when the step is the current step and not in preview mode.
+      if (!isPreview && stepId === event.stepId) {
+        const templateControls = await this.createStepControls(step, event);
+        const controls = await this.compileControls(templateControls, event);
+        const shouldSkip = await this.shouldSkip(options?.skip as typeof step.options.skip, controls);
 
-        return {} as any;
+        if (shouldSkip) {
+          setResult({
+            options: { skip: true },
+            outputs: {},
+            providers: {},
+          });
+
+          /*
+           * Return an empty object for results when a step is skipped.
+           * TODO: fix typings when `skip` is specified to return `Partial<T_Result>`
+           */
+          return {} as T_Result & StepContext;
+        }
       }
 
       const previewStepHandler = this.previewStep.bind(this);
       const executeStepHandler = this.executeStep.bind(this);
       const handler = isPreview ? previewStepHandler : executeStepHandler;
 
-      const stepResult = await handler(event, {
+      let stepResult = await handler(event, {
         ...step,
         providers: step.providers.map((provider) => {
-          const providerResolve = options?.providers?.[provider.type];
+          // TODO: Update return type to include ChannelStep and fix typings
+          const providerResolve = readProviderOverride(options, provider.type);
 
           if (!providerResolve) {
             throw new ProviderNotFoundError(provider.type);
@@ -289,18 +427,42 @@ export class Client {
             resolve: providerResolve,
           };
         }),
-        resolve: stepResolve,
+        resolve: stepResolve as typeof step.resolve,
       });
 
-      if (stepId === event.stepId) {
-        setResult(stepResult);
+      if (this.shouldSanitize({ stepType: step.type, options })) {
+        // Sanitize the outputs to avoid XSS attacks via Channel content.
+        stepResult = {
+          ...stepResult,
+          outputs: sanitizeHtmlInObject(stepResult.outputs),
+        };
       }
 
-      return stepResult.outputs as any;
-    };
+      if (stepId === event.stepId) {
+        setResult({
+          ...stepResult,
+          options: {
+            skip: false,
+          },
+        });
+      }
+
+      return stepResult.outputs as T_Result & StepContext;
+    });
   }
 
-  private async shouldSkip(skip: Skip<any> | undefined, controls: any): Promise<boolean> {
+  private shouldSanitize({ stepType, options }: { stepType: StepType; options: ChannelStepOption | undefined }) {
+    if (options?.disableOutputSanitization === true) {
+      return false;
+    }
+
+    return (['email', 'in_app'] as StepType[]).includes(stepType);
+  }
+
+  private async shouldSkip<T_Controls extends Record<string, unknown>>(
+    skip: Skip<T_Controls> | undefined,
+    controls: T_Controls
+  ): Promise<boolean> {
     if (!skip) {
       return false;
     }
@@ -309,44 +471,57 @@ export class Client {
   }
 
   public async executeWorkflow(event: Event): Promise<ExecuteOutput> {
-    const actionMessages = {
-      execute: 'Executing',
-      preview: 'Previewing',
+    const actionMessages: Record<string, string> = {
+      [PostActionEnum.EXECUTE]: 'Executing',
+      [PostActionEnum.PREVIEW]: 'Previewing',
     };
 
-    const actionMessage = actionMessages[event.action];
+    const actionMessage = actionMessages[event.action] || event.action;
+
     const actionMessageFormatted = `${actionMessage} workflowId:`;
-    // eslint-disable-next-line no-console
-    console.log(`\n${log.bold(log.underline(actionMessageFormatted))} '${event.workflowId}'`);
+    this.log(`\n${log.bold(log.underline(actionMessageFormatted))} '${event.workflowId}'`);
     const workflow = this.getWorkflow(event.workflowId);
 
     const startTime = process.hrtime();
 
-    let result: {
-      outputs: Record<string, unknown>;
-      providers: Record<string, unknown>;
-      options: Record<string, unknown>;
-    } = {
+    let result: Omit<ExecuteOutput, 'metadata'> = {
       outputs: {},
       providers: {},
-      options: {},
+      options: { skip: false },
     };
-    let resolveEarlyExit: (value?: unknown) => void;
-    const earlyExitPromise = new Promise((resolve) => {
-      resolveEarlyExit = resolve;
-    });
 
-    const setResult = (stepResult: any): void => {
-      resolveEarlyExit();
+    let concludeExecution: (value?: unknown) => void;
+    let hasConcludedExecution = false;
+    const concludeExecutionPromise = new Promise((resolve) => {
+      concludeExecution = resolve;
+    });
+    /**
+     * Set the result of the workflow execution.
+     *
+     * In order to exit evaluation of the Workflow's `execute` method when the specified
+     * `stepId` is reached, we need to `Promise.race` the `concludeExecutionPromise` with the
+     * `workflow.execute` method. By resolving the `concludeExecutionPromise` when setting the result,
+     * we can ensure that the `workflow.execute` method is not evaluated after the `stepId` is reached.
+     *
+     * @param stepResult The result of the workflow execution.
+     */
+    const setResult = (stepResult: Omit<ExecuteOutput, 'metadata'>): void => {
+      if (hasConcludedExecution) {
+        throw new Error('setResult can only be called once per workflow execution');
+      }
+      concludeExecution();
+      hasConcludedExecution = true;
+
       result = stepResult;
     };
+
+    const hasResult = (): boolean => hasConcludedExecution;
 
     let executionError: Error | undefined;
     try {
       if (
-        event.action === 'execute' && // TODO: move this validation to the handler layer
-        !event.payload &&
-        !event.data
+        event.action === PostActionEnum.EXECUTE && // TODO: move this validation to the handler layer
+        !event.payload
       ) {
         throw new ExecutionEventPayloadInvalidError(event.workflowId, {
           message: 'Event `payload` is required',
@@ -354,29 +529,29 @@ export class Client {
       }
 
       const executionData = await this.createExecutionPayload(event, workflow);
+      const validatedEvent = {
+        ...event,
+        payload: executionData,
+      };
       await Promise.race([
-        earlyExitPromise,
+        concludeExecutionPromise,
         workflow.execute({
           payload: executionData,
-          environment: {},
-          inputs: {},
+          env: event.env,
           controls: {},
           subscriber: event.subscriber,
+          context: event.context,
           step: {
-            // eslint-disable-next-line multiline-comment-style
-            // TODO: fix the typing for `type` to use the keyof providerSchema[channelType]
-            // @ts-expect-error - Types of parameters 'options' and 'options' are incompatible.
-            email: this.executeStepFactory(event, setResult),
-            sms: this.executeStepFactory(event, setResult),
-            inApp: this.executeStepFactory(event, setResult),
-            digest: this.executeStepFactory(event, setResult),
-            delay: this.executeStepFactory(event, setResult),
-            push: this.executeStepFactory(event, setResult),
-            // eslint-disable-next-line multiline-comment-style
-            // TODO: fix the typing for `type` to use the keyof providerSchema[channelType]
-            // @ts-expect-error - Types of parameters 'options' and 'options' are incompatible.
-            chat: this.executeStepFactory(event, setResult),
-            custom: this.executeStepFactory(event, setResult),
+            email: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            sms: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            inApp: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            digest: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            delay: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            push: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            chat: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            custom: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            throttle: this.executeStepFactory(validatedEvent, setResult, hasResult),
+            tool: this.executeStepFactory(validatedEvent, setResult, hasResult),
           },
         }),
       ]);
@@ -387,13 +562,16 @@ export class Client {
 
     const elapsedSeconds = endTime[0];
     const elapsedNanoseconds = endTime[1];
-    const elapsedTimeInMilliseconds = elapsedSeconds * 1000 + elapsedNanoseconds / 1_000_000;
+    const elapsedTimeInMilliseconds = elapsedSeconds * 1_000 + elapsedNanoseconds / 1_000_000;
 
     const emoji = executionError ? EMOJI.ERROR : EMOJI.SUCCESS;
-    const resultMessage =
-      event.action === 'execute' ? 'Executed' : event.action === 'preview' ? 'Previewed' : 'Invalid action';
-    // eslint-disable-next-line no-console
-    console.log(`${emoji} ${resultMessage} workflowId: \`${event.workflowId}\``);
+    const resultMessages: Record<string, string> = {
+      [PostActionEnum.EXECUTE]: 'Executed',
+      [PostActionEnum.PREVIEW]: 'Previewed',
+    };
+    const resultMessage = resultMessages[event.action] || event.action;
+
+    this.log(`${emoji} ${resultMessage} workflowId: \`${event.workflowId}\``);
 
     this.prettyPrintExecute(event, elapsedTimeInMilliseconds, executionError);
 
@@ -417,8 +595,8 @@ export class Client {
     event: Event,
     workflow: DiscoverWorkflowOutput
   ): Promise<Record<string, unknown>> {
-    let payload = event.payload || event.data;
-    if (event.action === 'preview') {
+    let { payload } = event;
+    if (event.action === PostActionEnum.PREVIEW) {
       const mockResult = this.mock(workflow.payload.schema);
 
       payload = Object.assign(mockResult, payload);
@@ -436,97 +614,108 @@ export class Client {
   }
 
   private prettyPrintExecute(event: Event, duration: number, error?: Error): void {
+    if (!this.verbose) return;
+
     const successPrefix = error ? EMOJI.ERROR : EMOJI.SUCCESS;
-    const actionMessage =
-      event.action === 'execute' ? 'Executed' : event.action === 'preview' ? 'Previewed' : 'Invalid action';
+    const actionMessages: Record<string, string> = {
+      [PostActionEnum.EXECUTE]: 'Executed',
+      [PostActionEnum.PREVIEW]: 'Previewed',
+    };
+    const actionMessage = actionMessages[event.action] || event.action;
     const message = error ? 'Failed to execute' : actionMessage;
     const executionLog = error ? log.error : log.success;
     const logMessage = `${successPrefix} ${message} workflowId: '${event.workflowId}`;
-    // eslint-disable-next-line no-console
-    console.log(`\n  ${log.bold(executionLog(logMessage))}'`);
-    // eslint-disable-next-line no-console
-    console.log(`  ├ ${EMOJI.STEP} stepId: '${event.stepId}'`);
-    // eslint-disable-next-line no-console
-    console.log(`  ├ ${EMOJI.ACTION} action: '${event.action}'`);
-    // eslint-disable-next-line no-console
-    console.log(`  └ ${EMOJI.DURATION} duration: '${duration.toFixed(2)}ms'\n`);
+    this.logger.info(
+      `\n  ${log.bold(executionLog(logMessage))}'\n` +
+        `  ├ ${EMOJI.STEP} stepId: '${event.stepId}'\n` +
+        `  ├ ${EMOJI.ACTION} action: '${event.action}'\n` +
+        `  └ ${EMOJI.DURATION} duration: '${duration.toFixed(2)}ms'\n`
+    );
   }
 
   private async executeProviders(
     event: Event,
     step: DiscoverStepOutput,
-    outputs: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    return step.providers.reduce(async (acc, provider) => {
-      const result = await acc;
-      const previewProviderHandler = this.previewProvider.bind(this);
-      const executeProviderHandler = this.executeProvider.bind(this);
-      const handler = event.action === 'preview' ? previewProviderHandler : executeProviderHandler;
+    outputs: Record<string, unknown>,
+    controls: Record<string, unknown>
+  ): Promise<Record<string, WithPassthrough<Record<string, unknown>>>> {
+    return step.providers.reduce(
+      async (acc, provider) => {
+        const result = await acc;
+        const providerResult = await this.runProvider(event, step, provider, outputs, controls);
 
-      const providerResult = await handler(event, step, provider, outputs);
-
-      return {
-        ...result,
-        [provider.type]: providerResult,
-      };
-    }, Promise.resolve({} as Record<string, unknown>));
+        return {
+          ...result,
+          [provider.type]: providerResult,
+        };
+      },
+      Promise.resolve({} as Record<string, WithPassthrough<Record<string, unknown>>>)
+    );
   }
 
-  private previewProvider(
+  private async runProvider(
     event: Event,
     step: DiscoverStepOutput,
     provider: DiscoverProviderOutput,
-    outputs: Record<string, unknown>
-  ): unknown {
-    // eslint-disable-next-line no-console
-    console.log(`  ${EMOJI.MOCK} Mocked provider: \`${provider.type}\``);
-    const mockOutput = this.mock(provider.outputs.schema);
+    outputs: Record<string, unknown>,
+    controls: Record<string, unknown>
+  ): Promise<WithPassthrough<Record<string, unknown>>> {
+    const isPreview = event.action === PostActionEnum.PREVIEW;
 
-    return mockOutput;
-  }
+    if (event.stepId !== step.stepId) {
+      if (isPreview) {
+        this.log(`  ${EMOJI.MOCK} Mocked provider: \`${provider.type}\``);
 
-  private async executeProvider(
-    event: Event,
-    step: DiscoverStepOutput,
-    provider: DiscoverProviderOutput,
-    outputs: Record<string, unknown>
-  ): Promise<unknown> {
-    const spinner = ora({ indent: 2 }).start(`Executing provider: \`${provider.type}\``);
-    try {
-      if (event.stepId === step.stepId) {
-        const controls = await this.createStepControls(step, event);
-        const result = await provider.resolve({
-          controls,
-          outputs,
-        });
-        const validatedOutput = await this.validate(
-          result,
-          provider.outputs.unknownSchema,
-          'step',
-          'output',
-          event.workflowId,
-          step.stepId,
-          provider.type
-        );
-        spinner.succeed(`Executed provider: \`${provider.type}\``);
-
-        return validatedOutput;
-      } else {
-        // No-op. We don't execute providers for hydrated steps
-        spinner.stopAndPersist({
-          symbol: EMOJI.HYDRATED,
-          text: `Hydrated provider: \`${provider.type}\``,
-        });
+        return this.mock(provider.outputs.schema);
       }
-    } catch (error) {
-      spinner.stopAndPersist({
-        symbol: EMOJI.ERROR,
-        text: `Failed to execute provider: \`${provider.type}\``,
-      });
-      throw new ProviderExecutionFailedError(
-        `Failed to execute provider: '${provider.type}'.\n${(error as Error).message}`
-      );
+
+      // No-op. We don't execute providers for hydrated steps
+      this.log(`  ${EMOJI.HYDRATED} Hydrated provider: \`${provider.type}\``);
+
+      return {};
     }
+
+    try {
+      return await this.resolveProviderOutput(event, step, provider, controls, outputs);
+    } catch (error) {
+      this.log(`  ${EMOJI.ERROR} Failed to execute provider: \`${provider.type}\``);
+
+      if (isPreview) {
+        this.log(`  ${EMOJI.MOCK} Mocked provider: \`${provider.type}\``);
+
+        return this.mock(provider.outputs.schema);
+      }
+
+      throw new ProviderExecutionFailedError(provider.type, event.action, error);
+    }
+  }
+
+  private async resolveProviderOutput(
+    event: Event,
+    step: DiscoverStepOutput,
+    provider: DiscoverProviderOutput,
+    controls: Record<string, unknown>,
+    outputs: Record<string, unknown>
+  ): Promise<WithPassthrough<Record<string, unknown>>> {
+    const result = await provider.resolve({
+      controls,
+      outputs,
+    });
+    const validatedOutput = await this.validate(
+      result,
+      provider.outputs.unknownSchema,
+      'step',
+      'output',
+      event.workflowId,
+      step.stepId,
+      provider.type
+    );
+    this.log(`  ${EMOJI.SUCCESS} Executed provider: \`${provider.type}\``);
+
+    return {
+      ...validatedOutput,
+      _passthrough: result._passthrough,
+    };
   }
 
   private async executeStep(
@@ -534,13 +723,13 @@ export class Client {
     step: DiscoverStepOutput
   ): Promise<Pick<ExecuteOutput, 'outputs' | 'providers'>> {
     if (event.stepId === step.stepId) {
-      const spinner = ora({ indent: 1 }).start(`Executing stepId: \`${step.stepId}\``);
       try {
         const templateControls = await this.createStepControls(step, event);
         const controls = await this.compileControls(templateControls, event);
         const output = await step.resolve(controls);
+        const normalizedOutput = await this.normalizeChatCardOutput(step, output);
         const validatedOutput = await this.validate(
-          output,
+          normalizedOutput,
           step.outputs.unknownSchema,
           'step',
           'output',
@@ -548,29 +737,28 @@ export class Client {
           step.stepId
         );
 
-        const providers = await this.executeProviders(event, step, validatedOutput);
+        const providers = await this.executeProviders(event, step, validatedOutput, controls);
 
-        spinner.succeed(`Executed stepId: \`${step.stepId}\``);
+        this.log(`  ${EMOJI.SUCCESS} Executed stepId: \`${step.stepId}\``);
 
         return {
           outputs: validatedOutput,
           providers,
         };
       } catch (error) {
-        spinner.stopAndPersist({
-          prefixText: '',
-          symbol: EMOJI.ERROR,
-          text: `Failed to execute stepId: \`${step.stepId}\``,
-        });
-        throw error;
+        this.log(`  ${EMOJI.ERROR} Failed to execute stepId: \`${step.stepId}\``);
+        if (isFrameworkError(error)) {
+          throw error;
+        } else {
+          throw new StepExecutionFailedError(step.stepId, event.action, error);
+        }
       }
     } else {
-      const spinner = ora({ indent: 1 }).start(`Hydrating stepId: \`${step.stepId}\``);
       try {
-        const result = event.state.find((state) => state.stepId === step.stepId);
+        const result = this.getStepState(event, step.stepId);
 
         if (result) {
-          const validatedResult = await this.validate(
+          const validatedOutput = await this.validate(
             result.outputs,
             step.results.unknownSchema,
             'step',
@@ -578,37 +766,119 @@ export class Client {
             event.workflowId,
             step.stepId
           );
-          spinner.stopAndPersist({
-            symbol: EMOJI.HYDRATED,
-            text: `Hydrated stepId: \`${step.stepId}\``,
-          });
+          this.log(`  ${EMOJI.HYDRATED} Hydrated stepId: \`${step.stepId}\``);
 
           return {
-            outputs: validatedResult,
-            providers: await this.executeProviders(event, step, validatedResult),
+            outputs: validatedOutput,
+            providers: await this.executeProviders(event, step, validatedOutput, {}),
           };
         } else {
           throw new ExecutionStateCorruptError(event.workflowId, step.stepId);
         }
       } catch (error) {
-        spinner.stopAndPersist({
-          symbol: EMOJI.ERROR,
-          text: `Failed to hydrate stepId: \`${step.stepId}\``,
-        });
+        this.log(`  ${EMOJI.ERROR} Failed to hydrate stepId: \`${step.stepId}\``);
+
         throw error;
       }
     }
   }
 
+  /**
+   * Code-first chat steps may return `card` as a `chat` JSX element (e.g. `Card(...)`) or a plain
+   * `CardElement`. Normalize it to plain `CardElement` JSON before validation so it matches the
+   * chat output schema and can cross the bridge unchanged. Non-chat steps and card-less outputs
+   * pass through untouched.
+   */
+  private async normalizeChatCardOutput(
+    step: DiscoverStepOutput,
+    output: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (step.type !== ChannelStepEnum.CHAT || output?.card == null) {
+      return output;
+    }
+
+    const resolvedCard = await resolveCardContent(output.card);
+
+    if (!resolvedCard) {
+      return output;
+    }
+
+    return { ...output, card: resolvedCard };
+  }
+
   private async compileControls(templateControls: Record<string, unknown>, event: Event) {
-    const templateString = this.templateEngine.parse(JSON.stringify(templateControls));
+    try {
+      /**
+       * Some control values (notably the Maily email `body`) are JSON.stringified before reaching
+       * the framework. If we feed them through `JSON.stringify(templateControls)` as-is, their
+       * `"` characters get doubly escaped while Liquid only single-escapes its outputs, so any
+       * rendered variable that contains a `"` corrupts the inner JSON (NV-7638).
+       *
+       * Expanding those JSON strings into real objects flattens the escaping to a single level
+       * before Liquid renders, and `restoreJsonStringControlValues` re-stringifies them after
+       * parsing the rendered template.
+       */
+      const expandedControls = expandJsonStringControlValues(templateControls) as Record<string, unknown>;
 
-    const compiledString = await this.templateEngine.render(templateString, {
-      ...(event.payload || event.data),
-      subscriber: event.subscriber,
-    });
+      let templateString = this.preprocessTranslationPatterns(JSON.stringify(expandedControls));
+      templateString = this.preprocessFilterTranslationArgs(templateString);
+      const discoveredWorkflow = this.getWorkflow(event.workflowId);
 
-    return JSON.parse(compiledString);
+      const renderVariables = {
+        workflow: {
+          workflowId: discoveredWorkflow.workflowId,
+          name: discoveredWorkflow.name,
+          description: discoveredWorkflow.description,
+          tags: discoveredWorkflow.tags,
+          severity: discoveredWorkflow.severity,
+        },
+        payload: event.payload,
+        subscriber: event.subscriber,
+        ...(event.actor && { actor: event.actor }),
+        context: event.context,
+        steps: buildSteps(event.state),
+        env: event.env ?? {},
+      };
+
+      const compiledString = await renderLiquidJson(this.templateEngine, templateString, renderVariables);
+      // Post-process: convert [T:key] placeholders back to {{t.key}} markers
+      const withMarkers = this.postprocessTranslationMarkers(compiledString);
+      // repair the string to fix invalid JSON, it could happen in the case when the control value
+      // doesn't have escaped quotes like '"foo"' then compiled string '{"body":""foo""}' is not valid JSON and parse will fail
+      const repairedString = jsonrepair(withMarkers);
+      const parsedControls = JSON.parse(repairedString);
+      const restoredControls = restoreJsonStringControlValues(parsedControls) as Record<string, unknown>;
+      // Normalize string values in the data field that contain invalid JSON (e.g., from Liquid template variables)
+      // This handles cases where Liquid outputs JavaScript object notation instead of valid JSON
+      return normalizeControlData(restoredControls);
+    } catch (error) {
+      throw new StepControlCompilationFailedError(event.workflowId, event.stepId, error);
+    }
+  }
+
+  /**
+   * Preprocesses standalone translation patterns.
+   * Transforms {{t.key}} to [T:key] placeholder (not Liquid syntax, passes through unchanged).
+   */
+  private preprocessTranslationPatterns(template: string): string {
+    return template.replace(/\{\{\s*t\.([\p{L}\p{N}_.-]+)\s*\}\}/gu, '[T:$1]');
+  }
+
+  /**
+   * Preprocesses translation keys used as filter arguments.
+   * Transforms 't.key' to '[T:key]' placeholder (not Liquid syntax, passes through unchanged).
+   * Example: pluralize: 't.apple', 't.apples' → pluralize: '[T:apple]', '[T:apples]'
+   */
+  private preprocessFilterTranslationArgs(template: string): string {
+    return template.replace(/'t\.([\p{L}\p{N}_.-]+)'/gu, "'[T:$1]'");
+  }
+
+  /**
+   * Post-processes placeholders back to translation markers after Liquid render.
+   * Transforms [T:key] back to {{t.key}} for the translation service.
+   */
+  private postprocessTranslationMarkers(content: string): string {
+    return content.replace(/\[T:([\p{L}\p{N}_.-]+)\]/gu, '{{t.$1}}');
   }
 
   /**
@@ -619,10 +889,8 @@ export class Client {
    * @returns The controls for the step
    */
   private async createStepControls(step: DiscoverStepOutput, event: Event): Promise<Record<string, unknown>> {
-    const stepControls = event.controls || event.inputs;
-
     const validatedControls = await this.validate(
-      stepControls,
+      event.controls,
       step.controls.unknownSchema,
       'step',
       'controls',
@@ -637,51 +905,65 @@ export class Client {
     event: Event,
     step: DiscoverStepOutput
   ): Promise<Pick<ExecuteOutput, 'outputs' | 'providers'>> {
-    const spinner = ora({ indent: 1 }).start(`Previewing stepId: \`${step.stepId}\``);
     try {
-      if (event.stepId === step.stepId) {
-        const templateControls = await this.createStepControls(step, event);
-        const controls = await this.compileControls(templateControls, event);
-
-        const previewOutput = await step.resolve(controls);
-        const validatedOutput = await this.validate(
-          previewOutput,
-          step.outputs.unknownSchema,
-          'step',
-          'output',
-          event.workflowId,
-          step.stepId
-        );
-
-        spinner.stopAndPersist({
-          symbol: EMOJI.MOCK,
-          text: `Mocked stepId: \`${step.stepId}\``,
-        });
-
-        return {
-          outputs: validatedOutput,
-          providers: await this.executeProviders(event, step, validatedOutput),
-        };
-      } else {
-        const mockResult = this.mock(step.results.schema);
-
-        spinner.stopAndPersist({
-          symbol: EMOJI.MOCK,
-          text: `Mocked stepId: \`${step.stepId}\``,
-        });
-
-        return {
-          outputs: mockResult,
-          providers: await this.executeProviders(event, step, mockResult),
-        };
-      }
+      return await this.constructStepForPreview(event, step);
     } catch (error) {
-      spinner.stopAndPersist({
-        symbol: EMOJI.ERROR,
-        text: `Failed to preview stepId: \`${step.stepId}\``,
-      });
-      throw error;
+      this.log(`  ${EMOJI.ERROR} Failed to preview stepId: \`${step.stepId}\``);
+
+      if (isFrameworkError(error)) {
+        throw error;
+      } else {
+        throw new StepExecutionFailedError(step.stepId, event.action, error);
+      }
     }
+  }
+
+  private async constructStepForPreview(event: Event, step: DiscoverStepOutput) {
+    if (event.stepId === step.stepId) {
+      return await this.previewRequiredStep(step, event);
+    } else {
+      return await this.extractMockDataForPreviousSteps(event, step);
+    }
+  }
+
+  private async extractMockDataForPreviousSteps(event: Event, step: DiscoverStepOutput) {
+    const outputs: Record<string, unknown> = {};
+    const suppliedResult = this.getStepState(event, step.stepId);
+    const mockedOutputs = this.mock(step.results.schema);
+
+    const mergedOutput = deepMerge(mockedOutputs, suppliedResult?.outputs || {});
+
+    return {
+      outputs: mergedOutput,
+      providers: await this.executeProviders(event, step, outputs, {}),
+    };
+  }
+
+  private async previewRequiredStep(step: DiscoverStepOutput, event: Event) {
+    const templateControls = await this.createStepControls(step, event);
+    const controls = await this.compileControls(templateControls, event);
+
+    const previewOutput = await step.resolve(controls);
+    const normalizedOutput = await this.normalizeChatCardOutput(step, previewOutput);
+    const validatedOutput = await this.validate(
+      normalizedOutput,
+      step.outputs.unknownSchema,
+      'step',
+      'output',
+      event.workflowId,
+      step.stepId
+    );
+
+    this.log(`  ${EMOJI.MOCK} Mocked stepId: \`${step.stepId}\``);
+
+    return {
+      outputs: validatedOutput,
+      providers: await this.executeProviders(event, step, validatedOutput, controls),
+    };
+  }
+
+  private getStepState(event: Event, stepId: string): State | undefined {
+    return event.state.find((state) => state.stepId === stepId);
   }
 
   private getStepCode(workflowId: string, stepId: string): CodeResult {
@@ -714,7 +996,17 @@ export class Client {
     return getCodeResult;
   }
 }
+function buildSteps(stateArray: State[]) {
+  const result: Record<string, Record<string, unknown>> = {};
 
-function clone<Result>(data: unknown) {
-  return JSON.parse(JSON.stringify(data)) as Result;
+  for (const state of stateArray) {
+    result[state.stepId] = state.outputs; // Map stepId to outputs
+  }
+
+  return result;
 }
+
+type ChannelStepOption = {
+  disableOutputSanitization?: boolean;
+  [key: string]: unknown;
+};

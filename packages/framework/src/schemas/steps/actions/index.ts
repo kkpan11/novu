@@ -1,11 +1,13 @@
 import { ActionStepEnum } from '../../../constants';
-import { Schema } from '../../../types/schema.types';
-import { delayChannelSchemas } from './delay.schema';
-import { digestChannelSchemas } from './digest.schema';
+import type { JsonSchema } from '../../../types/schema.types';
+import { delayActionSchemas } from './delay.schema';
+import { digestActionSchemas } from './digest.schema';
+import { throttleActionSchemas } from './throttle.schema';
 
-type RegularActionStepSchema = Exclude<ActionStepEnum, ActionStepEnum.CUSTOM>;
+type RegularActionStepSchema = Exclude<ActionStepEnum, ActionStepEnum.CUSTOM | ActionStepEnum.HTTP_REQUEST>;
 
 export const actionStepSchemas = {
-  delay: delayChannelSchemas,
-  digest: digestChannelSchemas,
-} satisfies Record<RegularActionStepSchema, { output: Schema; result: Schema }>;
+  delay: delayActionSchemas,
+  digest: digestActionSchemas,
+  throttle: throttleActionSchemas,
+} satisfies Record<RegularActionStepSchema, { output: JsonSchema; result: JsonSchema }>;

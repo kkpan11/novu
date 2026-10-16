@@ -1,17 +1,19 @@
-import { Test } from '@nestjs/testing';
-
-import { WorkflowQueueService } from './workflow-queue.service';
-import { BullMqService } from '../bull-mq';
 import { WorkflowInMemoryProviderService } from '../in-memory-provider';
-import { IWorkflowDataDto } from '../../dtos';
+import { createPinoLoggerMock, createSqsServiceMock } from '../queue-service-mocks.test-helpers';
+import { WorkflowQueueService } from './workflow-queue.service';
 
 let workflowQueueService: WorkflowQueueService;
+
+const mockSqsService = createSqsServiceMock();
+const mockLogger = createPinoLoggerMock();
 
 describe('Workflow Queue service', () => {
   describe('General', () => {
     beforeAll(async () => {
       workflowQueueService = new WorkflowQueueService(
-        new WorkflowInMemoryProviderService()
+        new WorkflowInMemoryProviderService(),
+        mockSqsService,
+        mockLogger
       );
       await workflowQueueService.queue.obliterate();
     });
@@ -27,12 +29,7 @@ describe('Workflow Queue service', () => {
     it('should be initialised properly', async () => {
       expect(workflowQueueService).toBeDefined();
       expect(Object.keys(workflowQueueService)).toEqual(
-        expect.arrayContaining([
-          'topic',
-          'DEFAULT_ATTEMPTS',
-          'instance',
-          'queue',
-        ])
+        expect.arrayContaining(['topic', 'DEFAULT_ATTEMPTS', 'instance', 'queue'])
       );
       expect(workflowQueueService.DEFAULT_ATTEMPTS).toEqual(3);
       expect(workflowQueueService.topic).toEqual('trigger-handler');
@@ -68,11 +65,11 @@ describe('Workflow Queue service', () => {
         _environmentId,
         _organizationId,
         _userId,
-      } as unknown as IWorkflowDataDto;
+      };
 
       await workflowQueueService.add({
         name: jobId,
-        data: jobData,
+        data: jobData as any,
         groupId: _organizationId,
       });
 
@@ -138,7 +135,9 @@ describe('Workflow Queue service', () => {
       process.env.IS_IN_MEMORY_CLUSTER_MODE_ENABLED = 'true';
 
       workflowQueueService = new WorkflowQueueService(
-        new WorkflowInMemoryProviderService()
+        new WorkflowInMemoryProviderService(),
+        mockSqsService,
+        mockLogger
       );
       await workflowQueueService.queue.obliterate();
     });
@@ -149,9 +148,7 @@ describe('Workflow Queue service', () => {
     });
 
     it('should have prefix in cluster mode', async () => {
-      expect(workflowQueueService.queue.opts.prefix).toEqual(
-        '{trigger-handler}'
-      );
+      expect(workflowQueueService.queue.opts.prefix).toEqual('{trigger-handler}');
     });
   });
 });

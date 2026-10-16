@@ -3,7 +3,7 @@ import { UserSession } from '@novu/testing';
 
 import { GetNovuLayout } from './get-novu-layout.usecase';
 
-describe('Get Novu Layout Usecase', function () {
+describe('Get Novu Layout Usecase', () => {
   let useCase: GetNovuLayout;
   let session: UserSession;
 
@@ -19,7 +19,7 @@ describe('Get Novu Layout Usecase', function () {
     useCase = moduleRef.get<GetNovuLayout>(GetNovuLayout);
   });
 
-  it('should retrieve the novu layout', async function () {
+  it('should retrieve the novu layout', async () => {
     const layout = await useCase.execute({});
 
     expect(layout).toContain(

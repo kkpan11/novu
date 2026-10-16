@@ -1,11 +1,11 @@
+import { ClientSession } from '@novu/dal';
 import { ChangeEntityTypeEnum } from '@novu/shared';
 import { IsDefined, IsMongoId, IsOptional, IsString } from 'class-validator';
-import { Document } from 'mongoose';
 import { EnvironmentWithUserCommand } from '../../commands';
 
-export interface IItem extends Pick<Document, '_id'> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+export interface IItem {
+  _id?: string;
+  [key: string]: any;
 }
 
 export class CreateChangeCommand extends EnvironmentWithUserCommand {
@@ -22,4 +22,11 @@ export class CreateChangeCommand extends EnvironmentWithUserCommand {
   @IsMongoId()
   @IsOptional()
   parentChangeId?: string;
+
+  /**
+   * Intentionally undecorated. Pass via `BaseCommand.create(data, { session })` —
+   * putting a ClientSession through `plainToInstance` calls `new ClientSession()` and
+   * throws `MongoRuntimeError: ClientSession requires a MongoClient` (NV-8457).
+   */
+  session?: ClientSession | null;
 }
