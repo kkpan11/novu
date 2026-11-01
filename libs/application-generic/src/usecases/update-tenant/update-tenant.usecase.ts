@@ -1,8 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { TenantRepository, TenantEntity } from '@novu/dal';
-
+import { TenantEntity, TenantRepository } from '@novu/dal';
+import { GetTenant, GetTenantCommand } from '../get-tenant';
 import { UpdateTenantCommand } from './update-tenant.command';
-import { GetTenantCommand, GetTenant } from '../get-tenant';
 
 @Injectable()
 export class UpdateTenant {
@@ -32,10 +31,7 @@ export class UpdateTenant {
       updatePayload.data = command.data;
     }
 
-    if (
-      command?.newIdentifier &&
-      command?.newIdentifier !== tenant?.identifier
-    ) {
+    if (command?.newIdentifier && command?.newIdentifier !== tenant?.identifier) {
       await this.validateIdentifierDuplication({
         environmentId: command.environmentId,
         identifier: command.newIdentifier,
@@ -56,7 +52,6 @@ export class UpdateTenant {
       }
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     return (await this.tenantRepository.findOne({
       _environmentId: command.environmentId,
       _organizationId: command.organizationId,
@@ -73,7 +68,7 @@ export class UpdateTenant {
   }) {
     const tenantExist = await this.tenantRepository.findOne({
       _environmentId: environmentId,
-      identifier: identifier,
+      identifier,
     });
 
     if (tenantExist) {

@@ -1,16 +1,29 @@
-import { Exclude } from 'class-transformer';
-import { ChannelTypeEnum, IMessageCTA, IActor } from '@novu/shared';
-
+import {
+  ChannelEndpointByType,
+  ChannelEndpointType,
+  ChannelTypeEnum,
+  IActor,
+  IMessageCTA,
+  SeverityLevelEnum,
+} from '@novu/shared';
+import type { ChangePropsValueType } from '../../types/helpers';
+import type { EnvironmentId } from '../environment';
 import { IEmailBlock } from '../message-template';
-import { SubscriberEntity } from '../subscriber';
 import { NotificationTemplateEntity } from '../notification-template';
 import type { OrganizationId } from '../organization';
-import type { EnvironmentId } from '../environment';
-import type { ChangePropsValueType } from '../../types/helpers';
+import { SubscriberEntity } from '../subscriber';
+
+export type MessageChannelData<T extends ChannelEndpointType = ChannelEndpointType> = {
+  identifier: string;
+  type: T;
+  endpoint: ChannelEndpointByType[T];
+  token?: string;
+};
 
 export class MessageEntity {
   _id: string;
 
+  // WorkflowEntity._id
   _templateId: string;
 
   _environmentId: string;
@@ -33,9 +46,9 @@ export class MessageEntity {
 
   templateIdentifier: string;
 
-  createdAt: string;
+  stepId?: string;
 
-  expireAt: string;
+  createdAt: string;
 
   updatedAt: string;
 
@@ -53,16 +66,32 @@ export class MessageEntity {
 
   read: boolean;
 
+  snoozedUntil?: string;
+
+  deliveredAt?: string[];
+
   archived: boolean;
 
+  /**
+   * todo: remove deleted field after all the soft deletes are removed task nv-5688
+   */
   deleted: boolean;
 
   email?: string;
 
+  /**
+   * @deprecated use channelData instead
+   */
   phone?: string;
 
+  /**
+   * @deprecated use channelData instead
+   */
   chatWebhookUrl?: string;
 
+  /**
+   * @deprecated use channelData instead
+   */
   directWebhookUrl?: string;
 
   providerId: string;
@@ -73,11 +102,13 @@ export class MessageEntity {
 
   lastSeenDate: string;
 
+  firstSeenDate: string;
+
   lastReadDate: string;
 
   cta: IMessageCTA;
 
-  _feedId: string;
+  _feedId?: string;
 
   status: 'sent' | 'error' | 'warning';
 
@@ -85,10 +116,9 @@ export class MessageEntity {
 
   errorText: string;
 
-  @Exclude()
-  providerResponse: any; // eslint-disable-line @typescript-eslint/no-explicit-any
-
   payload: Record<string, unknown>;
+
+  data?: Record<string, unknown>;
 
   overrides: Record<string, unknown>;
 
@@ -99,6 +129,16 @@ export class MessageEntity {
   _actorId?: string;
 
   tags?: string[];
+
+  avatar?: string;
+
+  severity?: SeverityLevelEnum;
+
+  channelData?: MessageChannelData[];
+
+  contextKeys?: string[];
+
+  _agentId?: string;
 }
 
 export type MessageDBModel = ChangePropsValueType<
@@ -112,4 +152,5 @@ export type MessageDBModel = ChangePropsValueType<
   | '_subscriberId'
   | '_feedId'
   | '_actorId'
+  | '_agentId'
 >;

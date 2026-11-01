@@ -1,10 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { PushpadPushProvider } from '@novu/providers';
+import { ChannelTypeEnum, ICredentials, PushProviderIdEnum } from '@novu/shared';
 import { BasePushHandler } from './base.handler';
 
 export class PushpadHandler extends BasePushHandler {
   constructor() {
-    super('pushpad', ChannelTypeEnum.PUSH);
+    super(PushProviderIdEnum.Pushpad, ChannelTypeEnum.PUSH);
   }
 
   buildProvider(credentials: ICredentials) {

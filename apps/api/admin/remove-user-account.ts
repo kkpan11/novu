@@ -1,9 +1,7 @@
-/* eslint-disable no-console */
 import '../src/config';
-import { UserRepository, MemberRepository } from '@novu/dal';
-
-import { connect } from './connect-to-dal';
+import { CommunityMemberRepository, CommunityUserRepository } from '@novu/dal';
 import { normalizeEmail } from '@novu/shared';
+import { connect } from './connect-to-dal';
 import { makeJsonBackup } from './make-json-backup';
 
 const args = process.argv.slice(2);
@@ -11,8 +9,8 @@ const EMAIL = args[0];
 const folder = 'remove-user-account';
 
 connect(async () => {
-  const userRepository = new UserRepository();
-  const memberRepository = new MemberRepository();
+  const userRepository = new CommunityUserRepository();
+  const memberRepository = new CommunityMemberRepository();
 
   const email = normalizeEmail(EMAIL);
   const user = await userRepository.findByEmail(email);

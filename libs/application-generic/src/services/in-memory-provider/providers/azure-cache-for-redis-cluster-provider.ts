@@ -1,10 +1,10 @@
+import { Logger } from '@nestjs/common';
 import Redis, { Cluster, ClusterNode, ClusterOptions, NodeRole } from 'ioredis';
 import { ConnectionOptions } from 'tls';
-import { Logger } from '@nestjs/common';
-
-export { Cluster, ClusterOptions };
 
 import { convertStringValues } from './variable-mappers';
+
+export { Cluster, ClusterOptions };
 
 export const CLIENT_READY = 'ready';
 const DEFAULT_TTL_SECONDS = 60 * 60 * 2;
@@ -41,91 +41,71 @@ export interface IAzureCacheForRedisClusterProviderConfig {
   ttl: number;
 }
 
-export const getAzureCacheForRedisClusterProviderConfig =
-  (): IAzureCacheForRedisClusterProviderConfig => {
-    const redisClusterConfig: IAzureCacheForRedisClusterConfig = {
-      host: convertStringValues(
-        process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_HOST
-      ),
-      port: convertStringValues(
-        process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_PORT
-      ),
-      ttl: convertStringValues(process.env.REDIS_CLUSTER_TTL),
-      username: convertStringValues(
-        process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_USERNAME
-      ),
-      password: convertStringValues(
-        process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_PASSWORD
-      ),
-      connectTimeout: convertStringValues(
-        process.env.REDIS_CLUSTER_CONNECTION_TIMEOUT
-      ),
-      keepAlive: convertStringValues(process.env.REDIS_CLUSTER_KEEP_ALIVE),
-      family: convertStringValues(process.env.REDIS_CLUSTER_FAMILY),
-      keyPrefix: convertStringValues(process.env.REDIS_CLUSTER_KEY_PREFIX),
-      tls: (process.env
-        .AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_TLS as ConnectionOptions)
-        ? {
-            servername: convertStringValues(
-              process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_HOST
-            ),
-          }
-        : {},
-    };
-
-    const host = redisClusterConfig.host;
-    const port = redisClusterConfig.port
-      ? Number(redisClusterConfig.port)
-      : undefined;
-    const username = redisClusterConfig.username;
-    const password = redisClusterConfig.password;
-    const connectTimeout = redisClusterConfig.connectTimeout
-      ? Number(redisClusterConfig.connectTimeout)
-      : DEFAULT_CONNECT_TIMEOUT;
-    const family = redisClusterConfig.family
-      ? Number(redisClusterConfig.family)
-      : DEFAULT_FAMILY;
-    const keepAlive = redisClusterConfig.keepAlive
-      ? Number(redisClusterConfig.keepAlive)
-      : DEFAULT_KEEP_ALIVE;
-    const keyPrefix = redisClusterConfig.keyPrefix ?? DEFAULT_KEY_PREFIX;
-    const ttl = redisClusterConfig.ttl
-      ? Number(redisClusterConfig.ttl)
-      : DEFAULT_TTL_SECONDS;
-
-    const instances: ClusterNode[] = [{ host, port }];
-
-    return {
-      host,
-      port,
-      instances,
-      username,
-      password,
-      connectTimeout,
-      family,
-      keepAlive,
-      keyPrefix,
-      ttl,
-      tls: redisClusterConfig.tls,
-    };
+export const getAzureCacheForRedisClusterProviderConfig = (): IAzureCacheForRedisClusterProviderConfig => {
+  const redisClusterConfig: IAzureCacheForRedisClusterConfig = {
+    host: convertStringValues(process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_HOST),
+    port: convertStringValues(process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_PORT),
+    ttl: convertStringValues(process.env.REDIS_CLUSTER_TTL),
+    username: convertStringValues(process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_USERNAME),
+    password: convertStringValues(process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_PASSWORD),
+    connectTimeout: convertStringValues(process.env.REDIS_CLUSTER_CONNECTION_TIMEOUT),
+    keepAlive: convertStringValues(process.env.REDIS_CLUSTER_KEEP_ALIVE),
+    family: convertStringValues(process.env.REDIS_CLUSTER_FAMILY),
+    keyPrefix: convertStringValues(process.env.REDIS_CLUSTER_KEY_PREFIX),
+    tls: (process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_TLS as ConnectionOptions)
+      ? {
+          servername: convertStringValues(process.env.AZURE_CACHE_FOR_REDIS_CLUSTER_SERVICE_HOST),
+        }
+      : {},
   };
 
-export const getAzureCacheForRedisCluster = (
-  enableAutoPipelining?: boolean
-): Cluster | undefined => {
-  const { instances, password, tls, username } =
-    getAzureCacheForRedisClusterProviderConfig();
+  const { host } = redisClusterConfig;
+  const port = redisClusterConfig.port ? Number(redisClusterConfig.port) : undefined;
+  const { username } = redisClusterConfig;
+  const { password } = redisClusterConfig;
+  const connectTimeout = redisClusterConfig.connectTimeout
+    ? Number(redisClusterConfig.connectTimeout)
+    : DEFAULT_CONNECT_TIMEOUT;
+  const family = redisClusterConfig.family ? Number(redisClusterConfig.family) : DEFAULT_FAMILY;
+  const keepAlive = redisClusterConfig.keepAlive ? Number(redisClusterConfig.keepAlive) : DEFAULT_KEEP_ALIVE;
+  const keyPrefix = redisClusterConfig.keyPrefix ?? DEFAULT_KEY_PREFIX;
+  const ttl = redisClusterConfig.ttl ? Number(redisClusterConfig.ttl) : DEFAULT_TTL_SECONDS;
+
+  const instances: ClusterNode[] = [{ host, port }];
+
+  return {
+    host,
+    port,
+    instances,
+    username,
+    password,
+    connectTimeout,
+    family,
+    keepAlive,
+    keyPrefix,
+    ttl,
+    tls: redisClusterConfig.tls,
+  };
+};
+
+export const getAzureCacheForRedisCluster = (enableAutoPipelining?: boolean): Cluster | undefined => {
+  const { instances, password, tls, username } = getAzureCacheForRedisClusterProviderConfig();
+
+  const skipVersionCheck = process.env.REDIS_SKIP_VERSION_CHECK === 'true';
+
+  const redisOptions = {
+    tls,
+    connectTimeout: 10000,
+    ...(password && { password }),
+    ...(username && { username }),
+    skipVersionCheck,
+  };
 
   const options: ClusterOptions = {
     dnsLookup: (address, callback) => callback(null, address),
     enableAutoPipelining: enableAutoPipelining ?? false,
     enableOfflineQueue: false,
-    redisOptions: {
-      tls,
-      connectTimeout: 10000,
-      ...(password && { password }),
-      ...(username && { username }),
-    },
+    redisOptions,
     scaleReads: 'slave',
     /*
      *  Disabled in Prod as affects performance
@@ -151,5 +131,4 @@ export const validateAzureCacheForRedisClusterProviderConfig = (): boolean => {
   return !!config.host && !!config.port;
 };
 
-export const isClientReady = (status: string): boolean =>
-  status === CLIENT_READY;
+export const isClientReady = (status: string): boolean => status === CLIENT_READY;

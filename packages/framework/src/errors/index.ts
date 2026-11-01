@@ -1,5 +1,7 @@
 export * from './base.errors';
+export * from './bridge.errors';
 export * from './execution.errors';
+export { isFrameworkError } from './guard.errors';
 export * from './handler.errors';
 export * from './platform.errors';
 export * from './provider.errors';

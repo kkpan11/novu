@@ -8,6 +8,7 @@ import {
   Post,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiExcludeController, ApiTags } from '@nestjs/swagger';
 import {
   ApiRateLimitCostEnum,
   IBulkInviteResponse,
@@ -15,27 +16,23 @@ import {
   MemberRoleEnum,
   UserSessionData,
 } from '@novu/shared';
-import { UserSession } from '../shared/framework/user.decorator';
-import { GetInviteCommand } from './usecases/get-invite/get-invite.command';
-import { AcceptInviteCommand } from './usecases/accept-invite/accept-invite.command';
-import { Roles } from '../auth/framework/roles.decorator';
-import { InviteMemberDto, InviteWebhookDto } from './dtos/invite-member.dto';
-import { InviteMemberCommand } from './usecases/invite-member/invite-member.command';
-import { BulkInviteMembersDto } from './dtos/bulk-invite-members.dto';
-import { BulkInviteCommand } from './usecases/bulk-invite/bulk-invite.command';
-import { InviteMember } from './usecases/invite-member/invite-member.usecase';
-import { BulkInvite } from './usecases/bulk-invite/bulk-invite.usecase';
-import { AcceptInvite } from './usecases/accept-invite/accept-invite.usecase';
-import { GetInvite } from './usecases/get-invite/get-invite.usecase';
-import { ResendInviteDto } from './dtos/resend-invite.dto';
-import { ResendInviteCommand } from './usecases/resend-invite/resend-invite.command';
-import { ResendInvite } from './usecases/resend-invite/resend-invite.usecase';
-import { ApiExcludeController, ApiTags } from '@nestjs/swagger';
+import { RequireAuthentication } from '../auth/framework/auth.decorator';
 import { ThrottlerCost } from '../rate-limiting/guards';
 import { ApiCommonResponses } from '../shared/framework/response.decorator';
-import { InviteNudgeWebhookCommand } from './usecases/invite-nudge/invite-nudge.command';
-import { InviteNudgeWebhook } from './usecases/invite-nudge/invite-nudge.usecase';
-import { UserAuthentication } from '../shared/framework/swagger/api.key.security';
+import { UserSession } from '../shared/framework/user.decorator';
+import { BulkInviteMembersDto } from './dtos/bulk-invite-members.dto';
+import { InviteMemberDto, InviteWebhookDto } from './dtos/invite-member.dto';
+import { ResendInviteDto } from './dtos/resend-invite.dto';
+import { AcceptInviteCommand } from './usecases/accept-invite/accept-invite.command';
+import { AcceptInvite } from './usecases/accept-invite/accept-invite.usecase';
+import { BulkInviteCommand } from './usecases/bulk-invite/bulk-invite.command';
+import { BulkInvite } from './usecases/bulk-invite/bulk-invite.usecase';
+import { GetInviteCommand } from './usecases/get-invite/get-invite.command';
+import { GetInvite } from './usecases/get-invite/get-invite.usecase';
+import { InviteMemberCommand } from './usecases/invite-member/invite-member.command';
+import { InviteMember } from './usecases/invite-member/invite-member.usecase';
+import { ResendInviteCommand } from './usecases/resend-invite/resend-invite.command';
+import { ResendInvite } from './usecases/resend-invite/resend-invite.usecase';
 
 @UseInterceptors(ClassSerializerInterceptor)
 @ApiCommonResponses()
@@ -48,8 +45,7 @@ export class InvitesController {
     private bulkInviteUsecase: BulkInvite,
     private acceptInviteUsecase: AcceptInvite,
     private getInvite: GetInvite,
-    private resendInviteUsecase: ResendInvite,
-    private inviteNudgeWebhookUsecase: InviteNudgeWebhook
+    private resendInviteUsecase: ResendInvite
   ) {}
 
   @Get('/:inviteToken')
@@ -62,7 +58,7 @@ export class InvitesController {
   }
 
   @Post('/:inviteToken/accept')
-  @UserAuthentication()
+  @RequireAuthentication()
   async acceptInviteToken(
     @UserSession() user: UserSessionData,
     @Param('inviteToken') inviteToken: string
@@ -76,8 +72,7 @@ export class InvitesController {
   }
 
   @Post('/')
-  @Roles(MemberRoleEnum.ADMIN)
-  @UserAuthentication()
+  @RequireAuthentication()
   async inviteMember(
     @UserSession() user: UserSessionData,
     @Body() body: InviteMemberDto
@@ -86,7 +81,7 @@ export class InvitesController {
       userId: user._id,
       organizationId: user.organizationId,
       email: body.email,
-      role: MemberRoleEnum.ADMIN,
+      role: MemberRoleEnum.OSS_ADMIN,
     });
 
     await this.inviteMemberUsecase.execute(command);
@@ -97,8 +92,7 @@ export class InvitesController {
   }
 
   @Post('/resend')
-  @Roles(MemberRoleEnum.ADMIN)
-  @UserAuthentication()
+  @RequireAuthentication()
   async resendInviteMember(
     @UserSession() user: UserSessionData,
     @Body() body: ResendInviteDto
@@ -118,8 +112,7 @@ export class InvitesController {
 
   @ThrottlerCost(ApiRateLimitCostEnum.BULK)
   @Post('/bulk')
-  @UserAuthentication()
-  @Roles(MemberRoleEnum.ADMIN)
+  @RequireAuthentication()
   async bulkInviteMembers(
     @UserSession() user: UserSessionData,
     @Body() body: BulkInviteMembersDto
@@ -131,19 +124,6 @@ export class InvitesController {
     });
 
     const response = await this.bulkInviteUsecase.execute(command);
-
-    return response;
-  }
-
-  @Post('/webhook')
-  async inviteCheckWebhook(@Headers('nv-hmac-256') hmacHeader: string, @Body() body: InviteWebhookDto) {
-    const command = InviteNudgeWebhookCommand.create({
-      hmacHeader,
-      subscriber: body.subscriber,
-      organizationId: body.payload.organizationId,
-    });
-
-    const response = await this.inviteNudgeWebhookUsecase.execute(command);
 
     return response;
   }

@@ -1,116 +1,105 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 import {
-  EmailBlockTypeEnum,
-  FieldLogicalOperatorEnum,
-  FieldOperatorEnum,
-  StepTypeEnum,
-} from '@novu/shared';
-import {
+  EnvironmentRepository,
+  ExecutionDetailsRepository,
+  JobRepository,
+  MessageRepository,
   MessageTemplateEntity,
-  TenantRepository,
-  SubscriberRepository,
   MessageTemplateRepository,
+  SubscriberRepository,
+  TenantRepository,
 } from '@novu/dal';
+import { EmailBlockTypeEnum, FieldLogicalOperatorEnum, FieldOperatorEnum, StepTypeEnum } from '@novu/shared';
 
+import { FeatureFlagsService, TraceLogRepository } from '../../services';
+import { CompileTemplate } from '../compile-template';
 import { ConditionsFilter } from '../conditions-filter';
-import { SelectVariant } from './select-variant.usecase';
-import { SelectVariantCommand } from './select-variant.command';
+import { CreateExecutionDetails } from '../create-execution-details';
 import { NormalizeVariables } from '../normalize-variables';
+import { SelectVariantCommand } from './select-variant.command';
+import { SelectVariant } from './select-variant.usecase';
 
-const findOneMessageTemplateMock = jest.fn(() => testVariant);
+const findOneMessageTemplateMock = vi.fn(() => testVariant);
 
-jest.mock('@novu/dal', () => ({
-  ...jest.requireActual('@novu/dal'),
-  MessageTemplateRepository: jest.fn(() => ({
-    findOne: findOneMessageTemplateMock,
-  })),
+vi.mock('@novu/dal', async () => ({
+  ...(await vi.importActual('@novu/dal')),
+  MessageTemplateRepository: vi.fn(function () {
+    return {
+      findOne: findOneMessageTemplateMock,
+    };
+  }),
 }));
 
-describe('select variant', function () {
+describe('select variant', () => {
   let selectVariantUsecase: SelectVariant;
 
-  beforeEach(async function () {
+  beforeEach(async () => {
     selectVariantUsecase = new SelectVariant(
-      // @ts-ignore
-      new ConditionsFilter(),
+      new ConditionsFilter(
+        new SubscriberRepository(),
+        new MessageRepository(),
+        new JobRepository(),
+        new EnvironmentRepository(),
+        new CreateExecutionDetails(
+          new ExecutionDetailsRepository(),
+          TraceLogRepository as any,
+          new FeatureFlagsService()
+        ),
+        new CompileTemplate(),
+        new FeatureFlagsService(),
+        { setContext: vi.fn(), info: vi.fn() } as any
+      ),
       new MessageTemplateRepository(),
       new NormalizeVariables(new SubscriberRepository(), new TenantRepository())
     );
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
-  it('should select the variant', async function () {
-    const variant = await selectVariantUsecase.execute(
-      command as unknown as SelectVariantCommand
-    );
+  it('should select the variant', async () => {
+    const variant = await selectVariantUsecase.execute(command as unknown as SelectVariantCommand);
 
     expect(variant.messageTemplate.content).toEqual(testVariant.content);
     expect(variant.messageTemplate.subject).toEqual(testVariant.subject);
     expect(variant.messageTemplate._id).toEqual(testVariant._id);
   });
 
-  it('should return step template if no variants are available', async function () {
+  it('should return step template if no variants are available', async () => {
     const commandWithoutVariants = { ...command };
     commandWithoutVariants.step.variants = [];
 
-    const stepVariant = await selectVariantUsecase.execute(
-      commandWithoutVariants as unknown as SelectVariantCommand
-    );
+    const stepVariant = await selectVariantUsecase.execute(commandWithoutVariants as unknown as SelectVariantCommand);
 
     expect(stepVariant.conditions).toBeUndefined();
-    expect(stepVariant.messageTemplate.content).toEqual(
-      commandWithoutVariants.step.template.content
-    );
-    expect(stepVariant.messageTemplate.subject).toEqual(
-      commandWithoutVariants.step.template.subject
-    );
-    expect(stepVariant.messageTemplate._id).toEqual(
-      commandWithoutVariants.step.template._id
-    );
+    expect(stepVariant.messageTemplate.content).toEqual(commandWithoutVariants.step.template.content);
+    expect(stepVariant.messageTemplate.subject).toEqual(commandWithoutVariants.step.template.subject);
+    expect(stepVariant.messageTemplate._id).toEqual(commandWithoutVariants.step.template._id);
   });
 
-  it('should return step template if no filterData are available', async function () {
+  it('should return step template if no filterData are available', async () => {
     const commandWithoutFilterData = { ...command };
     commandWithoutFilterData.filterData = {} as any;
 
-    const stepVariant = await selectVariantUsecase.execute(
-      commandWithoutFilterData as unknown as SelectVariantCommand
-    );
+    const stepVariant = await selectVariantUsecase.execute(commandWithoutFilterData as unknown as SelectVariantCommand);
 
     expect(stepVariant.conditions).toBeUndefined();
-    expect(stepVariant.messageTemplate.content).toEqual(
-      commandWithoutFilterData.step.template.content
-    );
-    expect(stepVariant.messageTemplate.subject).toEqual(
-      commandWithoutFilterData.step.template.subject
-    );
-    expect(stepVariant.messageTemplate._id).toEqual(
-      commandWithoutFilterData.step.template._id
-    );
+    expect(stepVariant.messageTemplate.content).toEqual(commandWithoutFilterData.step.template.content);
+    expect(stepVariant.messageTemplate.subject).toEqual(commandWithoutFilterData.step.template.subject);
+    expect(stepVariant.messageTemplate._id).toEqual(commandWithoutFilterData.step.template._id);
   });
 
-  it('should return step template if no filters are available', async function () {
+  it('should return step template if no filters are available', async () => {
     const commandWithoutFilterData = { ...command };
     commandWithoutFilterData.filterData = {} as any;
 
-    commandWithoutFilterData.step.variants.map((variant) => {
+    commandWithoutFilterData.step.variants.forEach((variant) => {
       variant.filters = [];
     });
 
-    const stepVariant = await selectVariantUsecase.execute(
-      commandWithoutFilterData as unknown as SelectVariantCommand
-    );
+    const stepVariant = await selectVariantUsecase.execute(commandWithoutFilterData as unknown as SelectVariantCommand);
 
     expect(stepVariant.conditions).toBeUndefined();
-    expect(stepVariant.messageTemplate.content).toEqual(
-      commandWithoutFilterData.step.template.content
-    );
-    expect(stepVariant.messageTemplate.subject).toEqual(
-      commandWithoutFilterData.step.template.subject
-    );
-    expect(stepVariant.messageTemplate._id).toEqual(
-      commandWithoutFilterData.step.template._id
-    );
+    expect(stepVariant.messageTemplate.content).toEqual(commandWithoutFilterData.step.template.content);
+    expect(stepVariant.messageTemplate.subject).toEqual(commandWithoutFilterData.step.template.subject);
+    expect(stepVariant.messageTemplate._id).toEqual(commandWithoutFilterData.step.template._id);
   });
 });
 

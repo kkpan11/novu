@@ -1,30 +1,34 @@
-import {
-  DynamicModule,
-  Module,
-  OnApplicationShutdown,
-  Provider,
-} from '@nestjs/common';
-
+import { DynamicModule, Module, OnApplicationShutdown, Provider } from '@nestjs/common';
+import { CommunityOrganizationRepository, MessageRepository } from '@novu/dal';
+import { JobTopicNameEnum } from '@novu/shared';
+import { hasMetricsBackend, isBullMqEnabled } from '../config';
+import { featureFlagsService } from '../custom-providers';
 import {
   ActiveJobsMetricQueueServiceHealthIndicator,
+  IHealthIndicator,
   InboundParseQueueServiceHealthIndicator,
   StandardQueueServiceHealthIndicator,
   SubscriberProcessQueueHealthIndicator,
   WebSocketsQueueServiceHealthIndicator,
   WorkflowQueueServiceHealthIndicator,
 } from '../health';
-import { ReadinessService, WorkflowInMemoryProviderService } from '../services';
+import {
+  EventBridgeSchedulerService,
+  ReadinessService,
+  SocketWorkerService,
+  SqsService,
+  WorkflowInMemoryProviderService,
+} from '../services';
 import {
   ActiveJobsMetricQueueService,
-  ExecutionLogQueueService,
   InboundParseQueueService,
+  QueueBaseService,
   StandardQueueService,
   SubscriberProcessQueueService,
   WebSocketsQueueService,
   WorkflowQueueService,
 } from '../services/queues';
 import { ActiveJobsMetricWorkerService } from '../services/workers';
-import { JobTopicNameEnum } from '@novu/shared';
 
 const memoryQueueService = {
   provide: WorkflowInMemoryProviderService,
@@ -37,8 +41,13 @@ const memoryQueueService = {
   },
 };
 
-const INTERNAL_MODULE_PROVIDERS = [memoryQueueService];
-const BASE_PROVIDERS: Provider[] = [ReadinessService];
+const INTERNAL_MODULE_PROVIDERS = [memoryQueueService, featureFlagsService];
+const BASE_PROVIDERS: Provider[] = [
+  ReadinessService,
+  CommunityOrganizationRepository,
+  SqsService,
+  EventBridgeSchedulerService,
+];
 
 @Module({
   providers: [],
@@ -59,48 +68,47 @@ export class QueuesModule implements OnApplicationShutdown {
         case JobTopicNameEnum.INBOUND_PARSE_MAIL:
           healthIndicators.push(InboundParseQueueServiceHealthIndicator);
           tokenList.push(InboundParseQueueService);
-          DYNAMIC_PROVIDERS.push(
-            InboundParseQueueService,
-            InboundParseQueueServiceHealthIndicator
-          );
+          DYNAMIC_PROVIDERS.push(InboundParseQueueService, InboundParseQueueServiceHealthIndicator);
           break;
         case JobTopicNameEnum.WORKFLOW:
           healthIndicators.push(WorkflowQueueServiceHealthIndicator);
           tokenList.push(WorkflowQueueService);
-          DYNAMIC_PROVIDERS.push(
-            WorkflowQueueService,
-            WorkflowQueueServiceHealthIndicator
-          );
+          DYNAMIC_PROVIDERS.push(WorkflowQueueService, WorkflowQueueServiceHealthIndicator);
           break;
         case JobTopicNameEnum.WEB_SOCKETS:
           healthIndicators.push(WebSocketsQueueServiceHealthIndicator);
           tokenList.push(WebSocketsQueueService);
           DYNAMIC_PROVIDERS.push(
+            MessageRepository,
+            SocketWorkerService,
             WebSocketsQueueService,
             WebSocketsQueueServiceHealthIndicator
           );
           break;
         case JobTopicNameEnum.STANDARD:
+          healthIndicators.push(StandardQueueServiceHealthIndicator);
           tokenList.push(StandardQueueService);
-          DYNAMIC_PROVIDERS.push(
-            StandardQueueService,
-            StandardQueueServiceHealthIndicator
-          );
+          DYNAMIC_PROVIDERS.push(StandardQueueService, StandardQueueServiceHealthIndicator);
           break;
         case JobTopicNameEnum.PROCESS_SUBSCRIBER:
           healthIndicators.push(SubscriberProcessQueueHealthIndicator);
           tokenList.push(SubscriberProcessQueueService);
-          DYNAMIC_PROVIDERS.push(
-            SubscriberProcessQueueService,
-            SubscriberProcessQueueHealthIndicator
-          );
-          break;
-        case JobTopicNameEnum.EXECUTION_LOG:
-          tokenList.push(ExecutionLogQueueService);
-          DYNAMIC_PROVIDERS.push(ExecutionLogQueueService);
+          DYNAMIC_PROVIDERS.push(SubscriberProcessQueueService, SubscriberProcessQueueHealthIndicator);
           break;
         case JobTopicNameEnum.ACTIVE_JOBS_METRIC:
-          healthIndicators.push(ActiveJobsMetricQueueServiceHealthIndicator);
+          // The gauges it records are BullMQ counters, so the topic follows BullMQ.
+          if (!isBullMqEnabled()) {
+            break;
+          }
+
+          /*
+           * Without a metrics backend `ActiveJobsMetricService` never creates a
+           * worker for this queue, so waiting on its health would gate startup
+           * on a queue nothing consumes.
+           */
+          if (hasMetricsBackend()) {
+            healthIndicators.push(ActiveJobsMetricQueueServiceHealthIndicator);
+          }
           tokenList.push(ActiveJobsMetricQueueService);
           DYNAMIC_PROVIDERS.push(
             ActiveJobsMetricQueueService,
@@ -108,23 +116,33 @@ export class QueuesModule implements OnApplicationShutdown {
             ActiveJobsMetricWorkerService
           );
           break;
+        default: {
+          const exhaustive: never = entity;
+          throw new Error(`Unhandled job topic in QueuesModule: ${exhaustive}`);
+        }
       }
     }
 
     DYNAMIC_PROVIDERS.push({
       provide: 'BULLMQ_LIST',
-      useFactory: (...args: any[]) => {
-        return args;
+      useFactory: (...queueServices: QueueBaseService[]) => {
+        return queueServices;
       },
       inject: tokenList,
     });
 
     DYNAMIC_PROVIDERS.push({
       provide: 'QUEUE_HEALTH_INDICATORS',
-      useFactory: (...args: any[]) => {
-        return args;
+      useFactory: (...indicators: IHealthIndicator[]) => {
+        return indicators;
       },
-      inject: healthIndicators,
+      /*
+       * These indicators only assert that the BullMQ client is up. Handing them
+       * to readiness once BullMQ is retired would make
+       * `ReadinessService.enableWorkers` block startup on a backend the
+       * deployment no longer uses.
+       */
+      inject: isBullMqEnabled() ? healthIndicators : [],
     });
 
     return {
@@ -134,9 +152,7 @@ export class QueuesModule implements OnApplicationShutdown {
     };
   }
 
-  constructor(
-    private workflowInMemoryProviderService: WorkflowInMemoryProviderService
-  ) {}
+  constructor(private workflowInMemoryProviderService: WorkflowInMemoryProviderService) {}
 
   async onApplicationShutdown() {
     await this.workflowInMemoryProviderService.shutdown();

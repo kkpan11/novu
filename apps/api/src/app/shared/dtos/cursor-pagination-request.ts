@@ -4,7 +4,6 @@ import { IsInt, IsMongoId, IsOptional, Max, Min } from 'class-validator';
 
 import type { Constructor, CursorPaginationParams } from '../types';
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 export function CursorPaginationRequestDto(defaultLimit = 10, maxLimit = 100): Constructor<CursorPaginationParams> {
   class CursorPaginationRequest {
     @ApiPropertyOptional({
@@ -12,7 +11,9 @@ export function CursorPaginationRequestDto(defaultLimit = 10, maxLimit = 100): C
       required: false,
       default: defaultLimit,
       maximum: maxLimit,
+      example: 10,
     })
+    @IsOptional()
     @Type(() => Number)
     @IsInt()
     @Min(1)
@@ -26,7 +27,10 @@ export function CursorPaginationRequestDto(defaultLimit = 10, maxLimit = 100): C
     })
     after?: string;
 
-    @ApiPropertyOptional()
+    @ApiPropertyOptional({
+      type: Number,
+      example: 0,
+    })
     @IsOptional()
     @Type(() => Number)
     @IsInt()

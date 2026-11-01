@@ -1,31 +1,28 @@
 import { Test } from '@nestjs/testing';
-import { UserSession } from '@novu/testing';
-import {
-  ChangeRepository,
-  LayoutRepository,
-  MessageTemplateRepository,
-} from '@novu/dal';
-import {
-  EmailBlockTypeEnum,
-  StepTypeEnum,
-  TemplateVariableTypeEnum,
-  WorkflowTypeEnum,
-} from '@novu/shared';
+import { ChangeRepository, DalService, LayoutRepository, MessageTemplateRepository } from '@novu/dal';
+import { EmailBlockTypeEnum, ResourceTypeEnum, StepTypeEnum, TemplateVariableTypeEnum } from '@novu/shared';
 import { expect } from 'chai';
-
-import { CreateMessageTemplate } from './create-message-template.usecase';
-import { CreateMessageTemplateCommand } from './create-message-template.command';
 import { CreateChange } from '../../create-change';
 import { UpdateChange } from '../../update-change';
+import { CreateMessageTemplateCommand } from './create-message-template.command';
+import { CreateMessageTemplate } from './create-message-template.usecase';
 
-describe('Create Message Template', function () {
+describe('Create Message Template', () => {
+  const dalService = new DalService();
   let useCase: CreateMessageTemplate;
-  let session: UserSession;
+
+  beforeAll(async () => {
+    await dalService.connect(process.env.MONGO_URL as string);
+  });
+
+  afterAll(async () => {
+    await dalService.disconnect();
+  });
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
-      imports: [],
       providers: [
+        CreateMessageTemplate,
         MessageTemplateRepository,
         LayoutRepository,
         CreateChange,
@@ -34,19 +31,19 @@ describe('Create Message Template', function () {
       ],
     }).compile();
 
-    session = new UserSession();
-    await session.initialize();
-
     useCase = moduleRef.get<CreateMessageTemplate>(CreateMessageTemplate);
   });
 
-  it('should create the message template', async function () {
+  it('should create the message template', async () => {
+    const userId = MessageTemplateRepository.createObjectId();
+    const organizationId = MessageTemplateRepository.createObjectId();
+    const environmentId = MessageTemplateRepository.createObjectId();
     const parentChangeId = MessageTemplateRepository.createObjectId();
     const content = [{ type: EmailBlockTypeEnum.TEXT, content: 'test' }];
     const command = CreateMessageTemplateCommand.create({
-      userId: session.user._id,
-      organizationId: session.organization._id,
-      environmentId: session.environment._id,
+      userId,
+      organizationId,
+      environmentId,
       type: StepTypeEnum.PUSH,
       name: 'test-message-template',
       title: 'test',
@@ -66,7 +63,7 @@ describe('Create Message Template', function () {
       ],
       content,
       parentChangeId,
-      workflowType: WorkflowTypeEnum.REGULAR,
+      workflowType: ResourceTypeEnum.REGULAR,
     });
 
     const result = await useCase.execute(command);
@@ -75,9 +72,9 @@ describe('Create Message Template', function () {
     expect(result).to.ownProperty('createdAt');
     expect(result).to.ownProperty('updatedAt');
     expect(result).to.ownProperty('_layoutId');
-    expect(result._organizationId).to.eql(session.organization._id);
-    expect(result._environmentId).to.eql(session.environment._id);
-    expect(result._creatorId).to.eql(session.user._id);
+    expect(result._organizationId).to.eql(organizationId);
+    expect(result._environmentId).to.eql(environmentId);
+    expect(result._creatorId).to.eql(userId);
     expect(result._feedId).to.eql(null);
     expect(result._layoutId).to.eql(null);
     expect(result.type).to.eql(StepTypeEnum.PUSH);

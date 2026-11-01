@@ -1,10 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { MailjetEmailProvider } from '@novu/providers';
-import { BaseHandler } from './base.handler';
+import { ChannelTypeEnum, EmailProviderIdEnum, ICredentials } from '@novu/shared';
+import { BaseEmailHandler } from './base.handler';
 
-export class MailjetHandler extends BaseHandler {
+export class MailjetHandler extends BaseEmailHandler {
   constructor() {
-    super('mailjet', ChannelTypeEnum.EMAIL);
+    super(EmailProviderIdEnum.Mailjet, ChannelTypeEnum.EMAIL);
   }
   buildProvider(credentials: ICredentials, from?: string) {
     const config: {

@@ -1,9 +1,8 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "module": "commonjs",
     "declaration": true,
-    "esModuleInterop": false,
     "noImplicitAny": false,
     "removeComments": true,
     "allowSyntheticDefaultImports": true,
@@ -12,9 +11,8 @@
     "target": "es6",
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./src",
     "types": ["node"]
   },
-  "include": [".eslintrc.js", "src/**/*", "src/**/*.d.ts"],
+  "include": ["src/**/*", "src/**/*.d.ts"],
   "exclude": ["node_modules", "**/*.spec.ts"]
 }

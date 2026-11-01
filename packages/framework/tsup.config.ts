@@ -1,17 +1,60 @@
-import { defineConfig } from 'tsup';
-import { type SupportedFrameworkName } from './src';
+import { defineConfig, type Options } from 'tsup';
+import { version } from './package.json';
+import { type SupportedFrameworkName } from './src/internal';
 
-const frameworks: SupportedFrameworkName[] = ['h3', 'express', 'next', 'nuxt', 'sveltekit', 'remix'];
+const frameworks: SupportedFrameworkName[] = [
+  'h3',
+  'hono',
+  'express',
+  'next',
+  'nuxt',
+  'sveltekit',
+  'remix',
+  'lambda',
+  'nest',
+];
 
-export default defineConfig({
-  entry: ['src/index.ts', ...frameworks.map((framework) => `src/${framework}.ts`)],
+const baseConfig: Options = {
+  entry: [
+    'src/index.ts',
+    'src/jsx-runtime.ts',
+    'src/jsx-dev-runtime.ts',
+    'src/internal/index.ts',
+    'src/step-resolver.ts',
+    'src/validators.ts',
+    ...frameworks.map((framework) => `src/servers/${framework}.ts`),
+    'src/ai-sdk/index.ts',
+    'src/langchain/index.ts',
+    'src/cards.ts',
+  ],
   sourcemap: false,
   clean: true,
-  treeshake: true,
-  dts: true,
-  format: ['cjs'],
+  dts: {
+    resolve: ['@novu/agent-event-protocol'],
+    // tsup 8 injects the deprecated `baseUrl` option into the dts build
+    compilerOptions: { ignoreDeprecations: '6.0' },
+  },
   minify: true,
   minifyWhitespace: true,
   minifyIdentifiers: true,
   minifySyntax: true,
-});
+  noExternal: ['chat', '@novu/agent-event-protocol'],
+  define: {
+    SDK_VERSION: `"${version}"`,
+    FRAMEWORK_VERSION: `"2024-06-26"`,
+  },
+};
+
+export const cjsConfig: Options = {
+  ...baseConfig,
+  format: 'cjs',
+  outDir: 'dist/cjs',
+};
+
+export const esmConfig: Options = {
+  ...baseConfig,
+  format: 'esm',
+  outDir: 'dist/esm',
+};
+
+export default defineConfig([cjsConfig, esmConfig]);

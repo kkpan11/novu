@@ -1,28 +1,22 @@
-import './config';
-import 'newrelic';
-import helmet from 'helmet';
+import './instrument';
 import { NestFactory } from '@nestjs/core';
-import * as Sentry from '@sentry/node';
-import { BullMqService, getErrorInterceptor, Logger } from '@novu/application-generic';
-import * as packageJson from '../package.json';
-
+import { getErrorInterceptor, Logger, type NovuTlsConfig, toNovuTlsServerOptions } from '@novu/application-generic';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
-import { CONTEXT_PATH } from './config';
+import { CONTEXT_PATH, validateEnv } from './config';
 import { InMemoryIoAdapter } from './shared/framework/in-memory-io.adapter';
-
-import { version } from '../package.json';
 import { prepareAppInfra, startAppInfra } from './socket/services';
 
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV,
-    release: `v${version}`,
+// Validate the ENV variables after launching SENTRY, so missing variables will report to sentry
+validateEnv();
+
+export async function bootstrap(tlsConfig?: NovuTlsConfig) {
+  // abortOnError: false so init errors reach runWithHydratedSecrets instead of process.abort(), which drops New Relic data.
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    abortOnError: false,
+    ...(tlsConfig && { httpsOptions: toNovuTlsServerOptions(tlsConfig) }),
   });
-}
-export async function bootstrap() {
-  BullMqService.haveProInstalled();
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
   const inMemoryAdapter = new InMemoryIoAdapter(app);
   await inMemoryAdapter.connectToInMemoryCluster();
@@ -51,11 +45,9 @@ export async function bootstrap() {
 
   await app.init();
 
-  try {
-    await startAppInfra(app);
-  } catch (e) {
-    process.exit(1);
-  }
+  await startAppInfra(app);
 
   await app.listen(process.env.PORT as string);
+
+  app.get(Logger).log(`[@novu/ws]: Listening on port ${process.env.PORT} over ${tlsConfig ? 'https' : 'http'}`);
 }
