@@ -1,8 +1,10 @@
-import { getPackageFolders } from './get-packages-folder.mjs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import spawn from 'cross-spawn';
-import { fileURLToPath } from 'url';
-import path from 'path';
-import * as fs from 'fs';
+import { getPackageFolders } from './get-packages-folder.mjs';
+
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const processArguments = process.argv.slice(2);
 
@@ -65,29 +67,38 @@ function pnpmRun(...args) {
   });
 }
 
-function commaSeparatedListToArray(str) {
-  return str
-    .trim()
-    .split(',')
-    .map((element) => element.trim())
-    .filter((element) => !!element.length);
-}
-
 function getAffectedCommandResult(str) {
   const outputLines = str.trim().split(/\r?\n/);
-  if (outputLines.length > 2) {
-    return outputLines.slice(2).join('');
+
+  // Find the line that contains the JSON array (starts with [ and ends with ])
+  for (const line of outputLines) {
+    const trimmedLine = line.trim();
+    if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
+      return trimmedLine;
+    }
   }
 
-  return '';
+  // Fallback: look for any line that contains JSON-like content
+  for (const line of outputLines) {
+    const trimmedLine = line.trim();
+    if (trimmedLine.includes('[') && trimmedLine.includes(']')) {
+      // Extract just the JSON part from the line
+      const jsonStart = trimmedLine.indexOf('[');
+      const jsonEnd = trimmedLine.lastIndexOf(']') + 1;
+      return trimmedLine.substring(jsonStart, jsonEnd);
+    }
+  }
+
+  // If no JSON found, return empty array
+  return '[]';
 }
 
 async function affectedProjectsContainingTask(taskName, baseBranch) {
-  const cachePath = taskName + baseBranch.replace('/', '').replace('/', '') + '-contain-task-cache.json';
+  const cachePath = `${taskName + baseBranch.replace('/', '').replace('/', '')}-contain-task-cache.json`;
 
-  const isCacheExists = fs.existsSync(cachePath);
+  const isCacheExists = existsSync(cachePath);
   if (isCacheExists) {
-    const cache = fs.readFileSync(cachePath, 'utf8');
+    const cache = readFileSync(cachePath, 'utf8');
 
     return JSON.parse(cache);
   }
@@ -106,19 +117,51 @@ async function affectedProjectsContainingTask(taskName, baseBranch) {
   // console.log("nx output:\n" + affectedCommandResult)
 
   // pnpm nx show projects --affected --withTarget=[task] --base [base branch] --json
-  const result = JSON.parse(getAffectedCommandResult(affectedCommandResult));
+  let result = JSON.parse(getAffectedCommandResult(affectedCommandResult));
 
-  fs.writeFileSync(cachePath, JSON.stringify(result));
+  // Nx maps the `.source` submodule pointer to no project, so a bump of it, which is how most enterprise changes
+  // reach this repo, would otherwise affect nothing.
+  if (isEnterpriseSourceChanged(baseBranch)) {
+    result = [...new Set([...result, ...(await enterpriseProjectsContainingTask(taskName))])];
+  }
+
+  writeFileSync(cachePath, JSON.stringify(result));
 
   return result;
 }
 
-async function allProjectsContainingTask(taskName) {
-  const cachePath = taskName + '-all-contain-task-cache.json';
+function git(...args) {
+  return execFileSync('git', args, {
+    cwd: ROOT_PATH,
+    encoding: ENCODING_TYPE,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
 
-  const isCacheExists = fs.existsSync(cachePath);
+function isEnterpriseSourceChanged(baseBranch) {
+  // Same range Nx diffs: from the merge base of the base branch and NX_HEAD (or HEAD), falling back to the base branch
+  // itself when the shallow CI clone doesn't reach the merge base.
+  const head = process.env.NX_HEAD || 'HEAD';
+  let from = baseBranch;
+  try {
+    from = git('merge-base', baseBranch, head);
+  } catch {}
+
+  return git('diff', '--name-only', from, head, '--', '.source').length > 0;
+}
+
+async function enterpriseProjectsContainingTask(taskName) {
+  const commandResult = await pnpmRun('nx', 'show', 'projects', '--withTarget', taskName, '--json');
+
+  return JSON.parse(getAffectedCommandResult(commandResult)).filter((project) => project.startsWith('@novu/ee-'));
+}
+
+async function allProjectsContainingTask(taskName) {
+  const cachePath = `${taskName}-all-contain-task-cache.json`;
+
+  const isCacheExists = existsSync(cachePath);
   if (isCacheExists) {
-    const cache = fs.readFileSync(cachePath, 'utf8');
+    const cache = readFileSync(cachePath, 'utf8');
 
     return JSON.parse(cache);
   }
@@ -138,7 +181,7 @@ async function allProjectsContainingTask(taskName) {
 
   const result = JSON.parse(getAffectedCommandResult(affectedCommandResult));
 
-  fs.writeFileSync(cachePath, JSON.stringify(result));
+  writeFileSync(cachePath, JSON.stringify(result));
 
   return result;
 }
@@ -150,6 +193,7 @@ async function printAffectedProjectsContainingTask() {
     BASE_BRANCH_NAME === ALL_FLAG
       ? await allProjectsContainingTask(TASK_NAME)
       : await affectedProjectsContainingTask(TASK_NAME, BASE_BRANCH_NAME);
+  const allProjects = projects;
 
   const foundProviders = projects.filter((project) => providers.includes(project));
   if (foundProviders.length) {
@@ -172,6 +216,8 @@ async function printAffectedProjectsContainingTask() {
     console.log(JSON.stringify(foundPackages));
   } else if (GROUP === 'libs') {
     console.log(JSON.stringify(foundLibs));
+  } else if (GROUP === 'all') {
+    console.log(JSON.stringify(allProjects));
   } else {
     console.log(JSON.stringify(projects));
   }

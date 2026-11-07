@@ -1,10 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { PushWebhookPushProvider } from '@novu/providers';
+import { ChannelTypeEnum, ICredentials, PushProviderIdEnum } from '@novu/shared';
 import { BasePushHandler } from './base.handler';
 
 export class PushWebhookHandler extends BasePushHandler {
   constructor() {
-    super('push-webhook', ChannelTypeEnum.PUSH);
+    super(PushProviderIdEnum.PushWebhook, ChannelTypeEnum.PUSH);
   }
 
   buildProvider(credentials: ICredentials) {

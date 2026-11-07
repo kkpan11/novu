@@ -1,14 +1,8 @@
-import { Injectable } from '@nestjs/common';
-import {
-  ChangeRepository,
-  DalException,
-  MessageTemplateRepository,
-} from '@novu/dal';
-import { ChangeEntityTypeEnum, WorkflowTypeEnum } from '@novu/shared';
-
-import { DeleteMessageTemplateCommand } from './delete-message-template.command';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { ChangeRepository, DalException, MessageTemplateRepository } from '@novu/dal';
+import { ChangeEntityTypeEnum, isBridgeWorkflow } from '@novu/shared';
 import { CreateChange, CreateChangeCommand } from '../../create-change';
-import { ApiException } from '../../../utils/exceptions';
+import { DeleteMessageTemplateCommand } from './delete-message-template.command';
 
 @Injectable()
 export class DeleteMessageTemplate {
@@ -20,10 +14,13 @@ export class DeleteMessageTemplate {
 
   async execute(command: DeleteMessageTemplateCommand): Promise<boolean> {
     try {
-      await this.messageTemplateRepository.delete({
-        _environmentId: command.environmentId,
-        _id: command.messageTemplateId,
-      });
+      await this.messageTemplateRepository.deleteById(
+        {
+          _environmentId: command.environmentId,
+          _id: command.messageTemplateId,
+        },
+        command.session ? { session: command.session } : {}
+      );
 
       const changeId = await this.changeRepository.getChangeId(
         command.environmentId,
@@ -31,30 +28,35 @@ export class DeleteMessageTemplate {
         command.messageTemplateId
       );
 
-      const deletedMessageTemplate =
-        await this.messageTemplateRepository.findDeleted({
+      const deletedMessageTemplate = await this.messageTemplateRepository.findDeleted(
+        {
           _environmentId: command.environmentId,
           _id: command.messageTemplateId,
-        });
+        },
+        command.session ? { session: command.session } : {}
+      );
 
-      if (command.workflowType !== WorkflowTypeEnum.ECHO) {
+      if (!isBridgeWorkflow(command.workflowType)) {
         await this.createChange.execute(
-          CreateChangeCommand.create({
-            changeId,
-            organizationId: command.organizationId,
-            environmentId: command.environmentId,
-            userId: command.userId,
-            item: deletedMessageTemplate[0],
-            type: ChangeEntityTypeEnum.MESSAGE_TEMPLATE,
-            parentChangeId: command.parentChangeId,
-          })
+          CreateChangeCommand.create(
+            {
+              changeId,
+              organizationId: command.organizationId,
+              environmentId: command.environmentId,
+              userId: command.userId,
+              item: deletedMessageTemplate[0],
+              type: ChangeEntityTypeEnum.MESSAGE_TEMPLATE,
+              parentChangeId: command.parentChangeId,
+            },
+            { session: command.session }
+          )
         );
       }
 
       return true;
     } catch (error) {
       if (error instanceof DalException) {
-        throw new ApiException(error.message);
+        throw new BadRequestException(error.message);
       }
       throw error;
     }

@@ -1,17 +1,31 @@
-import { ApiException, createHash, decryptApiKey } from '@novu/application-generic';
+import { BadRequestException } from '@nestjs/common';
+import { ContextPayload } from '@novu/shared';
+import { isContextHmacValidForAnyKey, isHmacValidForAnyKey } from '../../shared/helpers/is-valid-hmac';
 
 export function validateHmacEncryption({
-  apiKey,
+  apiKeys,
   subscriberId,
   subscriberHash,
 }: {
-  apiKey: string;
+  apiKeys: string[];
   subscriberId: string;
   subscriberHash?: string;
 }) {
-  const key = decryptApiKey(apiKey);
-  const hmacHash = createHash(key, subscriberId);
-  if (hmacHash !== subscriberHash) {
-    throw new ApiException('Please provide a valid HMAC hash');
+  if (!isHmacValidForAnyKey(apiKeys, subscriberId, subscriberHash)) {
+    throw new BadRequestException('Please provide a valid HMAC hash');
+  }
+}
+
+export function validateContextHmacEncryption({
+  apiKeys,
+  context,
+  contextHash,
+}: {
+  apiKeys: string[];
+  context: ContextPayload;
+  contextHash?: string;
+}) {
+  if (!isContextHmacValidForAnyKey(apiKeys, context, contextHash)) {
+    throw new BadRequestException('Please provide a valid context HMAC hash');
   }
 }

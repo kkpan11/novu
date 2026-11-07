@@ -1,20 +1,31 @@
-import { IChatFactory, IChatHandler } from './interfaces';
-import { SlackHandler } from './handlers/slack.handler';
 import { IntegrationEntity } from '@novu/dal';
+import { ChatWebhookHandler } from './handlers/chat-webhook.handler';
 import { DiscordHandler } from './handlers/discord.handler';
-import { MSTeamsHandler } from './handlers/msteams.handler';
-import { MattermostHandler } from './handlers/mattermost.handler';
-import { GrafanaOnCallHandler } from './handlers/grafana-on-call.handler';
-import { RyverHandler } from './handlers/ryver.handler';
-import { ZulipHandler } from './handlers/zulip.handler';
 import { GetstreamChatHandler } from './handlers/getstream.handler';
+import { GoogleChatHandler } from './handlers/google-chat.handler';
+import { GrafanaOnCallHandler } from './handlers/grafana-on-call.handler';
+import { LineHandler } from './handlers/line.handler';
+import { MattermostHandler } from './handlers/mattermost.handler';
+import { MSTeamsHandler } from './handlers/msteams.handler';
+import { NovuSlackHandler } from './handlers/novu-slack.handler';
+import { PhotonImessageHandler } from './handlers/photon-imessage.handler';
 import { RocketChatHandler } from './handlers/rocket-chat.handler';
+import { RyverHandler } from './handlers/ryver.handler';
+import { SendblueHandler } from './handlers/sendblue.handler';
+import { SlackHandler } from './handlers/slack.handler';
+import { TelegramHandler } from './handlers/telegram.handler';
+import { WebexMessagingHandler } from './handlers/webex-messaging.handler';
 import { WhatsAppBusinessHandler } from './handlers/whatsapp-business.handler';
+import { ZulipHandler } from './handlers/zulip.handler';
+import { IChatFactory, IChatHandler } from './interfaces';
 
 export class ChatFactory implements IChatFactory {
   handlers: IChatHandler[] = [
+    new ChatWebhookHandler(),
     new SlackHandler(),
+    new NovuSlackHandler(),
     new DiscordHandler(),
+    new GoogleChatHandler(),
     new MSTeamsHandler(),
     new MattermostHandler(),
     new RyverHandler(),
@@ -23,17 +34,20 @@ export class ChatFactory implements IChatFactory {
     new GetstreamChatHandler(),
     new RocketChatHandler(),
     new WhatsAppBusinessHandler(),
+    new LineHandler(),
+    new TelegramHandler(),
+    new WebexMessagingHandler(),
+    new SendblueHandler(),
+    new PhotonImessageHandler(),
   ];
 
-  getHandler(integration: IntegrationEntity) {
+  getHandler(integration: Pick<IntegrationEntity, 'credentials' | 'channel' | 'providerId' | 'configurations'>) {
     const handler =
-      this.handlers.find((handlerItem) =>
-        handlerItem.canHandle(integration.providerId, integration.channel)
-      ) ?? null;
+      this.handlers.find((handlerItem) => handlerItem.canHandle(integration.providerId, integration.channel)) ?? null;
 
     if (!handler) return null;
 
-    handler.buildProvider(integration.credentials);
+    handler.buildProvider({ ...integration.credentials, ...integration.configurations });
 
     return handler;
   }

@@ -1,36 +1,78 @@
-import type { ApiService } from '@novu/client';
-
+import { InboxService } from '../api';
+import { PreferencesCache } from '../cache/preferences-cache';
+import { ScheduleCache } from '../cache/schedule-cache';
 import { NovuEventEmitter } from '../event-emitter';
-import { ChannelPreference, ChannelType, PreferenceLevel, Workflow } from '../types';
-import { ApiServiceSingleton } from '../utils/api-service-singleton';
+import { ChannelPreference, PreferenceLevel, Prettify, Result, Workflow } from '../types';
 import { updatePreference } from './helpers';
+import { Schedule, ScheduleLike } from './schedule';
+import { UpdatePreferenceArgs } from './types';
 
-type PreferenceLike = Pick<Preference, 'level' | 'enabled' | 'channels' | 'workflow'>;
+type PreferenceLike = Pick<Preference, 'level' | 'enabled' | 'channels' | 'workflow'> & { schedule?: ScheduleLike };
 
 export class Preference {
   #emitter: NovuEventEmitter;
-  #apiService: ApiService;
+  #apiService: InboxService;
+  #cache: PreferencesCache;
+  #scheduleCache: ScheduleCache;
+  #useCache: boolean;
 
   readonly level: PreferenceLevel;
   readonly enabled: boolean;
   readonly channels: ChannelPreference;
   readonly workflow?: Workflow;
+  schedule: Schedule;
 
-  constructor(preference: PreferenceLike) {
-    this.#emitter = NovuEventEmitter.getInstance();
-    this.#apiService = ApiServiceSingleton.getInstance();
-
+  constructor(
+    preference: PreferenceLike,
+    {
+      emitterInstance,
+      inboxServiceInstance,
+      cache,
+      scheduleCache,
+      useCache,
+    }: {
+      emitterInstance: NovuEventEmitter;
+      inboxServiceInstance: InboxService;
+      cache: PreferencesCache;
+      scheduleCache: ScheduleCache;
+      useCache: boolean;
+    }
+  ) {
+    this.#emitter = emitterInstance;
+    this.#apiService = inboxServiceInstance;
+    this.#cache = cache;
+    this.#scheduleCache = scheduleCache;
+    this.#useCache = useCache;
     this.level = preference.level;
     this.enabled = preference.enabled;
     this.channels = preference.channels;
     this.workflow = preference.workflow;
+    this.schedule = new Schedule(
+      { ...preference.schedule },
+      { emitterInstance, inboxServiceInstance, cache: scheduleCache, useCache }
+    );
   }
 
-  updatePreference({ enabled, channel }: { enabled: boolean; channel: ChannelType }): Promise<Preference> {
+  update({
+    channels,
+    channelPreferences,
+  }: Prettify<
+    Pick<UpdatePreferenceArgs, 'channels'> & {
+      /** @deprecated Use channels instead */
+      channelPreferences?: ChannelPreference;
+    }
+  >): Result<Preference> {
     return updatePreference({
       emitter: this.#emitter,
       apiService: this.#apiService,
-      args: { workflowId: this.workflow?.id, enabled, channel },
+      cache: this.#cache,
+      scheduleCache: this.#scheduleCache,
+      useCache: this.#useCache,
+      args: {
+        workflowId: this.workflow?.id,
+        channels: channels || channelPreferences,
+        preference: this,
+      },
     });
   }
 }

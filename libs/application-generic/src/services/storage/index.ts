@@ -1,14 +1,9 @@
-import {
-  AzureBlobStorageService,
-  GCSStorageService,
-  S3StorageService,
-  StorageService,
-} from './storage.service';
+import { AzureBlobStorageService, GCSStorageService, S3StorageService, StorageService } from './storage.service';
 
 export * from './storage-helper.service';
 
-function getStorageServiceClass(service: string) {
-  switch (service) {
+export function resolveStorageServiceClass(service?: string) {
+  switch ((service || '').toUpperCase()) {
     case 'GCS':
       return GCSStorageService;
     case 'AZURE':
@@ -20,7 +15,7 @@ function getStorageServiceClass(service: string) {
 
 export const storageService = {
   provide: StorageService,
-  useClass: getStorageServiceClass(String(process.env.STORAGE_SERVICE)),
+  useClass: resolveStorageServiceClass(process.env.STORAGE_SERVICE),
 };
 
 export { StorageService };

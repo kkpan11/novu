@@ -1,64 +1,43 @@
-import { Injectable } from '@nestjs/common';
-import { merge } from 'lodash';
-import { readFile } from 'fs/promises';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-
-import { IEmailBlock, OrganizationRepository } from '@novu/dal';
-
-import {
-  CompileTemplate,
-  CompileTemplateCommand,
-  CompileTemplateBase,
-} from '../compile-template';
-import { ApiException } from '../../utils/exceptions';
-import { CompileEmailTemplateCommand } from './compile-email-template.command';
-import { LayoutDto, GetLayoutCommand, GetLayoutUseCase } from '../get-layout';
+import { CommunityOrganizationRepository, IEmailBlock } from '@novu/dal';
+import { merge } from 'es-toolkit/compat';
+import { readFile } from 'fs/promises';
 import { VerifyPayloadService } from '../../services';
+import { CompileTemplate, CompileTemplateBase } from '../compile-template';
+import { GetLayoutCommandV0, GetLayoutUseCaseV0, LayoutDtoV0 } from '../get-layout-v0';
 import { GetNovuLayout } from '../get-novu-layout';
+import { CompileEmailTemplateCommand } from './compile-email-template.command';
 
 @Injectable()
 export class CompileEmailTemplate extends CompileTemplateBase {
   constructor(
     private compileTemplate: CompileTemplate,
-    protected organizationRepository: OrganizationRepository,
-    private getLayoutUsecase: GetLayoutUseCase,
+    protected communityOrganizationRepository: CommunityOrganizationRepository,
+    private getLayoutUsecase: GetLayoutUseCaseV0,
     private getNovuLayoutUsecase: GetNovuLayout,
     protected moduleRef: ModuleRef
   ) {
-    super(organizationRepository, moduleRef);
+    super(communityOrganizationRepository, moduleRef);
   }
 
   public async execute(
     command: CompileEmailTemplateCommand,
-    initiateTranslations?: (
-      environmentId: string,
-      organizationId,
-      locale: string
-    ) => Promise<void>
+    // we need i18nInstance outside the command on order to avoid command serialization on it.
+    i18nInstance?: any
   ) {
     const verifyPayloadService = new VerifyPayloadService();
     const organization = await this.getOrganization(command.organizationId);
 
-    let i18nInstance;
-    if (initiateTranslations) {
-      i18nInstance = await initiateTranslations(
-        command.environmentId,
-        command.organizationId,
-        command.locale ||
-          command.payload.subscriber?.locale ||
-          organization.defaultLocale
-      );
-    }
-
     const isEditorMode = command.contentType === 'editor';
 
-    let layout: LayoutDto | null = null;
+    let layout: LayoutDtoV0 | null = null;
     let layoutContent: string | null = null;
 
     if (command.layoutId) {
       layout = await this.getLayoutUsecase.execute(
-        GetLayoutCommand.create({
-          layoutId: command.layoutId,
+        GetLayoutCommandV0.create({
+          layoutIdOrInternalId: command.layoutId,
           environmentId: command.environmentId,
           organizationId: command.organizationId,
         })
@@ -70,10 +49,7 @@ export class CompileEmailTemplate extends CompileTemplateBase {
     }
 
     const layoutVariables = layout?.variables || [];
-    const defaultPayload = verifyPayloadService.verifyPayload(
-      layoutVariables,
-      command.payload
-    );
+    const defaultPayload = verifyPayloadService.verifyPayload(layoutVariables, command.payload);
 
     let helperBlocksContent: string | null = null;
     if (isEditorMode) {
@@ -82,8 +58,8 @@ export class CompileEmailTemplate extends CompileTemplateBase {
 
     let subject = '';
     let senderName;
-    const content: string | IEmailBlock[] = command.content;
-    let preheader = command.preheader;
+    const { content } = command;
+    let { preheader } = command;
 
     command.payload = merge({}, defaultPayload, command.payload);
 
@@ -98,45 +74,26 @@ export class CompileEmailTemplate extends CompileTemplateBase {
     };
 
     try {
-      subject = await this.renderContent(
-        command.subject,
-        payload,
-        i18nInstance
-      );
+      subject = await this.renderContent(command.subject, payload, i18nInstance);
 
       if (preheader) {
         preheader = await this.renderContent(preheader, payload, i18nInstance);
       }
 
       if (command.senderName) {
-        senderName = await this.renderContent(
-          command.senderName,
-          payload,
-          i18nInstance
-        );
+        senderName = await this.renderContent(command.senderName, payload, i18nInstance);
       }
     } catch (e: any) {
-      throw new ApiException(
-        e?.message || `Email subject message content could not be generated`
-      );
+      throw new BadRequestException(e?.message || `Email subject message content could not be generated`);
     }
 
-    const customLayout = CompileEmailTemplate.addPreheader(
-      layoutContent as string
-    );
+    const customLayout = CompileEmailTemplate.addPreheader(layoutContent as string);
 
     if (isEditorMode) {
       for (const block of content as IEmailBlock[]) {
-        block.content = await this.renderContent(
-          block.content,
-          payload,
-          i18nInstance
-        );
-        block.url = await this.renderContent(
-          block.url || '',
-          payload,
-          i18nInstance
-        );
+        if (typeof block !== 'object' || block === null) continue;
+        block.content = await this.renderContent(block.content, payload, i18nInstance);
+        block.url = await this.renderContent(block.url || '', payload, i18nInstance);
       }
     }
 
@@ -148,39 +105,39 @@ export class CompileEmailTemplate extends CompileTemplateBase {
       blocks: isEditorMode ? content : [],
     };
 
-    const body = await this.compileTemplate.execute({
-      i18next: i18nInstance,
-      template: !isEditorMode
-        ? (content as string)
-        : (helperBlocksContent as string),
-      data: templateVariables,
-    });
+    const body = await this.compileTemplate.execute(
+      {
+        template: !isEditorMode ? (content as string) : (helperBlocksContent as string),
+        data: templateVariables,
+      },
+      i18nInstance
+    );
 
     templateVariables.body = body as string;
 
     const html = customLayout
-      ? await this.compileTemplate.execute({
-          i18next: i18nInstance,
-          template: customLayout,
-          data: templateVariables,
-        })
+      ? await this.compileTemplate.execute(
+          {
+            template: customLayout,
+            data: templateVariables,
+          },
+          i18nInstance
+        )
       : body;
 
     return { html, content, subject, senderName };
   }
 
-  private async renderContent(
-    content: string,
-    payload: Record<string, unknown>,
-    i18nInstance: any
-  ) {
-    const renderedContent = await this.compileTemplate.execute({
-      i18next: i18nInstance,
-      template: content,
-      data: {
-        ...payload,
+  private async renderContent(content: string, payload: Record<string, unknown>, i18nInstance: any) {
+    const renderedContent = await this.compileTemplate.execute(
+      {
+        template: content,
+        data: {
+          ...payload,
+        },
       },
-    });
+      i18nInstance
+    );
 
     return renderedContent?.trim() || '';
   }
@@ -188,7 +145,7 @@ export class CompileEmailTemplate extends CompileTemplateBase {
   public static addPreheader(content: string): string {
     // "&nbsp;&zwnj;&nbsp;&zwnj;" is needed to spacing away the rest of the email from the preheader area in email clients
     return content?.replace(
-      /<body\b[^\<\>]*?>/,
+      /<body\b[^<>]*?>/,
       `$&{{#if preheader}}
           <div style="display: none; max-height: 0px; overflow: hidden;">
             {{preheader}}

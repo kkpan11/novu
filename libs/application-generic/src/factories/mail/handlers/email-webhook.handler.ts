@@ -1,9 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { EmailWebhookProvider } from '@novu/providers';
-import { BaseHandler } from './base.handler';
-export class EmailWebhookHandler extends BaseHandler {
+import { ChannelTypeEnum, EmailProviderIdEnum, ICredentials } from '@novu/shared';
+import { BaseEmailHandler } from './base.handler';
+
+export class EmailWebhookHandler extends BaseEmailHandler {
   constructor() {
-    super('email-webhook', ChannelTypeEnum.EMAIL);
+    super(EmailProviderIdEnum.EmailWebhook, ChannelTypeEnum.EMAIL);
   }
 
   buildProvider(credentials: ICredentials, from: string) {
@@ -11,10 +12,12 @@ export class EmailWebhookHandler extends BaseHandler {
       from: string;
       webhookUrl: string;
       hmacSecretKey?: string;
+      hmacSecretKeyEncoding?: 'text' | 'base64' | 'hex';
     } = {
       from: credentials.from as string,
       webhookUrl: credentials.webhookUrl as string,
       hmacSecretKey: credentials.secretKey as string,
+      hmacSecretKeyEncoding: credentials.hmacSecretKeyEncoding ?? 'text',
     };
     this.provider = new EmailWebhookProvider(config);
   }

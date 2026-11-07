@@ -1,56 +1,43 @@
-import { expect } from 'chai';
+import { Novu } from '@novu/api';
+import { SubscriberPayloadDto } from '@novu/api/models/components';
+import { CacheInMemoryProviderService, CacheService } from '@novu/application-generic';
+import { MessageRepository, NotificationTemplateEntity, SubscriberEntity, SubscriberRepository } from '@novu/dal';
+import { ChannelTypeEnum, StepTypeEnum } from '@novu/shared';
+import { SubscribersService, UserSession } from '@novu/testing';
 import axios from 'axios';
-import {
-  NotificationTemplateEntity,
-  SubscriberEntity,
-  MessageRepository,
-  SubscriberRepository,
-  NotificationTemplateRepository,
-} from '@novu/dal';
-import { UserSession, SubscribersService } from '@novu/testing';
-import { ChannelTypeEnum, ISubscribersDefine, IUpdateNotificationTemplateDto, StepTypeEnum } from '@novu/shared';
-import {
-  buildNotificationTemplateIdentifierKey,
-  buildNotificationTemplateKey,
-  CacheInMemoryProviderService,
-  CacheService,
-  InvalidateCacheService,
-} from '@novu/application-generic';
-
+import { expect } from 'chai';
+import { initNovuClassSdk } from '../../shared/helpers/e2e/sdk/e2e-sdk.helper';
 import { UpdateSubscriberPreferenceRequestDto } from '../../widgets/dtos/update-subscriber-preference-request.dto';
 
-const axiosInstance = axios.create();
-
-describe('Trigger event - process subscriber /v1/events/trigger (POST)', function () {
+describe('Trigger event - process subscriber /v1/events/trigger (POST) #novu-v2', () => {
   let session: UserSession;
   let template: NotificationTemplateEntity;
   let subscriber: SubscriberEntity;
   let subscriberService: SubscribersService;
   let cacheService: CacheService;
-  let invalidateCache: InvalidateCacheService;
   let cacheInMemoryProviderService: CacheInMemoryProviderService;
+  let novuClient: Novu;
 
   const subscriberRepository = new SubscriberRepository();
   const messageRepository = new MessageRepository();
-  const notificationTemplateRepository = new NotificationTemplateRepository();
 
   before(async () => {
     cacheInMemoryProviderService = new CacheInMemoryProviderService();
     cacheService = new CacheService(cacheInMemoryProviderService);
     await cacheService.initialize();
-    invalidateCache = new InvalidateCacheService(cacheService);
   });
 
   beforeEach(async () => {
     session = new UserSession();
     await session.initialize();
+    novuClient = initNovuClassSdk(session);
 
     template = await session.createTemplate();
     subscriberService = new SubscribersService(session.organization._id, session.environment._id);
     subscriber = await subscriberService.createSubscriber();
   });
 
-  it('should trigger only active steps', async function () {
+  it('should trigger only active steps', async () => {
     const newTemplate = await session.createTemplate({
       steps: [
         {
@@ -71,23 +58,15 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
       ],
     });
 
-    await axiosInstance.post(
-      `${session.serverUrl}/v1/events/trigger`,
-      {
-        name: newTemplate.triggers[0].identifier,
-        to: [{ subscriberId: subscriber.subscriberId, phone: '+972541111111' }],
-        payload: {
-          organizationName: 'Testing of Organization Name',
-        },
+    await novuClient.trigger({
+      workflowId: newTemplate.triggers[0].identifier,
+      to: [{ subscriberId: subscriber.subscriberId, phone: '+972541111111' }],
+      payload: {
+        organizationName: 'Testing of Organization Name',
       },
-      {
-        headers: {
-          authorization: `ApiKey ${session.apiKey}`,
-        },
-      }
-    );
+    });
 
-    await session.awaitRunningJobs(newTemplate._id);
+    await session.waitForJobCompletion(newTemplate._id);
 
     const message = await messageRepository.find({
       _environmentId: session.environment._id,
@@ -99,8 +78,8 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
     expect(message.length).to.equal(2);
   });
 
-  it('should update a subscriber based on event', async function () {
-    const payload: ISubscribersDefine = {
+  it('should update a subscriber based on event', async () => {
+    const payload: SubscriberPayloadDto = {
       subscriberId: subscriber.subscriberId,
       firstName: 'New Test Name',
       lastName: 'New Last of name',
@@ -110,7 +89,7 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     await triggerEvent(session, template, payload);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     const createdSubscriber = await subscriberRepository.findBySubscriberId(
       session.environment._id,
@@ -123,8 +102,8 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
     expect(createdSubscriber?.locale).to.equal(payload.locale);
   });
 
-  it('should send only email trigger second time based on the subscriber preference', async function () {
-    const payload: ISubscribersDefine = {
+  it('should send only email trigger second time based on the subscriber preference', async () => {
+    const payload: SubscriberPayloadDto = {
       subscriberId: session.subscriberId,
       firstName: 'New Test Name',
       lastName: 'New Last of name',
@@ -133,7 +112,7 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     await triggerEvent(session, template, payload);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     const widgetSubscriber = await subscriberRepository.findBySubscriberId(
       session.environment._id,
@@ -159,7 +138,7 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     await triggerEvent(session, template, payload);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     message = await messageRepository.find({
       _environmentId: session.environment._id,
@@ -170,8 +149,8 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
     expect(message.length).to.equal(3);
   });
 
-  it('should ignore subscriber preference and send all triggers for system critical template', async function () {
-    const payload: ISubscribersDefine = {
+  it('should ignore subscriber preference and send all triggers for system critical template', async () => {
+    const payload: SubscriberPayloadDto = {
       subscriberId: session.subscriberId,
       firstName: 'New Test Name',
       lastName: 'New Last of name',
@@ -180,7 +159,7 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     await triggerEvent(session, template, payload);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     const widgetSubscriber = await subscriberRepository.findBySubscriberId(
       session.environment._id,
@@ -195,14 +174,6 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     expect(message.length).to.equal(2);
 
-    const notificationTemplateKey = buildNotificationTemplateKey({
-      _id: template._id,
-      _environmentId: session.environment._id,
-    });
-    await invalidateCache.invalidateByKey({
-      key: notificationTemplateKey,
-    });
-
     const updateData = {
       channel: {
         type: ChannelTypeEnum.IN_APP,
@@ -212,19 +183,11 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
 
     await updateSubscriberPreference(updateData, session.subscriberToken, template._id);
 
-    const rest = await notificationTemplateRepository.update(
-      {
-        _id: template._id,
-        _environmentId: session.environment._id,
-      },
-      {
-        critical: true,
-      }
-    );
+    await session.testAgent.put(`/v1/workflows/${template._id}`).send({ critical: true });
 
     await triggerEvent(session, template, payload);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     message = await messageRepository.find({
       _environmentId: session.environment._id,
@@ -236,22 +199,15 @@ describe('Trigger event - process subscriber /v1/events/trigger (POST)', functio
   });
 });
 
-async function triggerEvent(session, template, payload) {
-  await axiosInstance.post(
-    `${session.serverUrl}/v1/events/trigger`,
-    {
-      name: template.triggers[0].identifier,
-      to: {
-        ...payload,
-      },
-      payload: {},
+async function triggerEvent(session: UserSession, template: NotificationTemplateEntity, payload: SubscriberPayloadDto) {
+  const novuClient = initNovuClassSdk(session);
+  await novuClient.trigger({
+    workflowId: template.triggers[0].identifier,
+    to: {
+      ...payload,
     },
-    {
-      headers: {
-        authorization: `ApiKey ${session.apiKey}`,
-      },
-    }
-  );
+    payload: {},
+  });
 }
 
 async function updateSubscriberPreference(

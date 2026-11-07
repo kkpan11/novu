@@ -1,19 +1,10 @@
-import { forwardRef, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { SubscriberEntity, SubscriberRepository } from '@novu/dal';
 
-import {
-  InvalidateCacheService,
-  buildSubscriberKey,
-} from '../../services/cache';
-import { subscriberNeedUpdate } from '../../utils/subscriber';
-
+import { buildSubscriberKey, CachedResponse, InvalidateCacheService } from '../../services';
+import { subscriberNeedUpdate } from '../../utils';
+import { OAuthHandlerEnum, UpdateSubscriberChannel, UpdateSubscriberChannelCommand } from '../subscribers';
 import { UpdateSubscriberCommand } from './update-subscriber.command';
-import { ApiException } from '../../utils/exceptions';
-import {
-  OAuthHandlerEnum,
-  UpdateSubscriberChannel,
-  UpdateSubscriberChannelCommand,
-} from '../subscribers';
 
 @Injectable()
 export class UpdateSubscriber {
@@ -23,18 +14,16 @@ export class UpdateSubscriber {
     private updateSubscriberChannel: UpdateSubscriberChannel
   ) {}
 
-  public async execute(
-    command: UpdateSubscriberCommand
-  ): Promise<SubscriberEntity> {
+  public async execute(command: UpdateSubscriberCommand): Promise<SubscriberEntity> {
     const foundSubscriber = command.subscriber
       ? command.subscriber
-      : await this.subscriberRepository.findBySubscriberId(
-          command.environmentId,
-          command.subscriberId
-        );
+      : await this.fetchSubscriber({
+          subscriberId: command.subscriberId,
+          _environmentId: command.environmentId,
+        });
 
     if (!foundSubscriber) {
-      throw new ApiException(`SubscriberId: ${command.subscriberId} not found`);
+      throw new BadRequestException(`SubscriberId: ${command.subscriberId} not found`);
     }
 
     const updatePayload: Partial<SubscriberEntity> = {};
@@ -43,27 +32,31 @@ export class UpdateSubscriber {
       updatePayload.email = command.email;
     }
 
-    if (command.phone != null) {
+    if (command.phone !== undefined) {
       updatePayload.phone = command.phone;
     }
 
-    if (command.firstName != null) {
+    if (command.firstName !== undefined) {
       updatePayload.firstName = command.firstName;
     }
 
-    if (command.lastName != null) {
+    if (command.lastName !== undefined) {
       updatePayload.lastName = command.lastName;
     }
 
-    if (command.avatar != null) {
+    if (command.avatar !== undefined) {
       updatePayload.avatar = command.avatar;
     }
 
-    if (command.locale != null) {
+    if (command.locale !== undefined) {
       updatePayload.locale = command.locale;
     }
 
-    if (command.data != null) {
+    if (command.timezone !== undefined) {
+      updatePayload.timezone = command.timezone;
+    }
+
+    if (command.data !== undefined) {
       updatePayload.data = command.data;
     }
 
@@ -94,16 +87,23 @@ export class UpdateSubscriber {
       }
     );
 
+    // fetch subscriber again as channel credentials are updated
+    if (command.channels?.length) {
+      const updatedSubscriber = await this.fetchSubscriber({
+        subscriberId: command.subscriberId,
+        _environmentId: command.environmentId,
+      });
+
+      return updatedSubscriber;
+    }
+
     return {
       ...foundSubscriber,
       ...updatePayload,
     };
   }
 
-  private async updateSubscriberChannels(
-    command: UpdateSubscriberCommand,
-    foundSubscriber: SubscriberEntity
-  ) {
+  private async updateSubscriberChannels(command: UpdateSubscriberCommand, foundSubscriber: SubscriberEntity) {
     for (const channel of command.channels) {
       await this.updateSubscriberChannel.execute(
         UpdateSubscriberChannelCommand.create({
@@ -119,5 +119,22 @@ export class UpdateSubscriber {
         })
       );
     }
+  }
+
+  @CachedResponse({
+    builder: (command: { subscriberId: string; _environmentId: string }) =>
+      buildSubscriberKey({
+        _environmentId: command._environmentId,
+        subscriberId: command.subscriberId,
+      }),
+  })
+  private async fetchSubscriber({
+    subscriberId,
+    _environmentId,
+  }: {
+    subscriberId: string;
+    _environmentId: string;
+  }): Promise<SubscriberEntity | null> {
+    return await this.subscriberRepository.findBySubscriberId(_environmentId, subscriberId, true);
   }
 }

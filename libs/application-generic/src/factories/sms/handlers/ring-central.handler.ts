@@ -1,18 +1,13 @@
 import { RingCentralSmsProvider } from '@novu/providers';
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
+import { ChannelTypeEnum, ICredentials, SmsProviderIdEnum } from '@novu/shared';
 import { BaseSmsHandler } from './base.handler';
 
 export class RingCentralHandler extends BaseSmsHandler {
   constructor() {
-    super('ring-central', ChannelTypeEnum.SMS);
+    super(SmsProviderIdEnum.RingCentral, ChannelTypeEnum.SMS);
   }
   buildProvider(credentials: ICredentials) {
-    if (
-      !credentials.clientId ||
-      !credentials.secretKey ||
-      !credentials.token ||
-      !credentials.from
-    ) {
+    if (!credentials.clientId || !credentials.secretKey || !credentials.token || !credentials.from) {
       throw Error('Invalid credentials');
     }
 

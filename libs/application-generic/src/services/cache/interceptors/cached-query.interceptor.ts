@@ -4,7 +4,6 @@ import { CacheService } from '../cache.service';
 
 const LOG_CONTEXT = 'CachedQueryInterceptor';
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 export function CachedQuery({ builder }: { builder: (...args) => string }) {
   const injectCache = Inject(CacheService);
 
@@ -14,8 +13,7 @@ export function CachedQuery({ builder }: { builder: (...args) => string }) {
     injectCache(target, 'cacheService');
 
     descriptor.value = async function (...args: any[]) {
-      if (!this.cacheService?.cacheEnabled())
-        return await originalMethod.apply(this, args);
+      if (!this.cacheService?.cacheEnabled()) return await originalMethod.apply(this, args);
 
       const cacheService = this.cacheService as CacheService;
 
