@@ -1,24 +1,18 @@
-import {
-  IsDefined,
-  IsEnum,
-  IsMongoId,
-  IsOptional,
-  IsString,
-  ValidateNested,
-} from 'class-validator';
-import { JSONSchema7 } from 'json-schema';
+import { ClientSession } from '@novu/dal';
 
 import {
-  StepTypeEnum,
+  IActor,
   IEmailBlock,
   IMessageCTA,
   ITemplateVariable,
-  IActor,
   MessageTemplateContentType,
-  WorkflowTypeEnum,
+  ResourceTypeEnum,
+  StepTypeEnum,
 } from '@novu/shared';
-
+import { Exclude } from 'class-transformer';
+import { IsDefined, IsEnum, IsMongoId, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { EnvironmentWithUserCommand } from '../../../commands';
+import { JSONSchema } from '../../../value-objects';
 
 export class CreateMessageTemplateCommand extends EnvironmentWithUserCommand {
   @IsDefined()
@@ -73,17 +67,13 @@ export class CreateMessageTemplateCommand extends EnvironmentWithUserCommand {
   _creatorId?: string;
 
   @IsOptional()
-  inputs?: {
-    schema: JSONSchema7;
-  };
-  @IsOptional()
   controls?: {
-    schema: JSONSchema7;
+    schema: JSONSchema;
   };
 
   @IsOptional()
   output?: {
-    schema: JSONSchema7;
+    schema: JSONSchema;
   };
 
   @IsOptional()
@@ -92,7 +82,14 @@ export class CreateMessageTemplateCommand extends EnvironmentWithUserCommand {
   @IsOptional()
   stepId?: string;
 
-  @IsEnum(WorkflowTypeEnum)
+  @IsEnum(ResourceTypeEnum)
   @IsDefined()
-  workflowType: WorkflowTypeEnum;
+  workflowType: ResourceTypeEnum;
+
+  /**
+   * Exclude session from the command to avoid serializing it in the response
+   */
+  @Exclude()
+  @IsOptional()
+  session?: ClientSession | null;
 }

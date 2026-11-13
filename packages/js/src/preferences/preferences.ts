@@ -1,32 +1,115 @@
+import { InboxService } from '../api';
 import { BaseModule } from '../base-module';
-import { PreferenceLevel } from '../types';
-import { mapPreference, updatePreference } from './helpers';
+import { PreferencesCache } from '../cache/preferences-cache';
+import { ScheduleCache } from '../cache/schedule-cache';
+import { NovuEventEmitter } from '../event-emitter';
+import { Result, WorkflowCriticalityEnum } from '../types';
+import { bulkUpdatePreference, updatePreference } from './helpers';
 import { Preference } from './preference';
-import type { FetchPreferencesArgs, UpdatePreferencesArgs } from './types';
+import { PreferenceSchedule } from './preference-schedule';
+import type { BasePreferenceArgs, InstancePreferenceArgs, ListPreferencesArgs, UpdatePreferenceArgs } from './types';
 
 export class Preferences extends BaseModule {
-  async fetch({ level = PreferenceLevel.TEMPLATE }: FetchPreferencesArgs = {}): Promise<Preference[]> {
+  #useCache: boolean;
+
+  readonly cache: PreferencesCache;
+  readonly scheduleCache: ScheduleCache;
+  readonly schedule: PreferenceSchedule;
+
+  constructor({
+    useCache,
+    inboxServiceInstance,
+    eventEmitterInstance,
+  }: {
+    useCache: boolean;
+    inboxServiceInstance: InboxService;
+    eventEmitterInstance: NovuEventEmitter;
+  }) {
+    super({
+      eventEmitterInstance,
+      inboxServiceInstance,
+    });
+    this.cache = new PreferencesCache({
+      emitterInstance: this._emitter,
+    });
+    this.scheduleCache = new ScheduleCache({
+      emitterInstance: this._emitter,
+    });
+    this.#useCache = useCache;
+    this.schedule = new PreferenceSchedule({
+      cache: this.scheduleCache,
+      useCache,
+      inboxServiceInstance,
+      eventEmitterInstance,
+    });
+  }
+
+  async list(args: ListPreferencesArgs = {}): Result<Preference[]> {
     return this.callWithSession(async () => {
-      const args = { level };
       try {
-        this._emitter.emit('preferences.fetch.pending', { args });
+        let data = this.#useCache ? this.cache.getAll(args) : undefined;
+        this._emitter.emit('preferences.list.pending', { args, data });
 
-        const response = await this._apiService.getPreferences({ level });
-        const modifiedResponse: Preference[] = response.map((el) => new Preference(mapPreference(el)));
+        if (!data) {
+          const response = await this._inboxService.fetchPreferences({
+            tags: args.tags,
+            severity: args.severity,
+            criticality: args.criticality ?? WorkflowCriticalityEnum.NON_CRITICAL,
+          });
+          data = response.map(
+            (el) =>
+              new Preference(el, {
+                emitterInstance: this._emitter,
+                inboxServiceInstance: this._inboxService,
+                cache: this.cache,
+                scheduleCache: this.scheduleCache,
+                useCache: this.#useCache,
+              })
+          );
 
-        this._emitter.emit('preferences.fetch.success', { args, result: modifiedResponse });
+          if (this.#useCache) {
+            this.cache.set(args, data);
+            data = this.cache.getAll(args);
+          }
+        }
 
-        return modifiedResponse;
+        this._emitter.emit('preferences.list.resolved', { args, data });
+
+        return { data };
       } catch (error) {
-        this._emitter.emit('preferences.fetch.error', { args, error });
+        this._emitter.emit('preferences.list.resolved', { args, error });
         throw error;
       }
     });
   }
 
-  async update(args: UpdatePreferencesArgs): Promise<Preference> {
-    return this.callWithSession(async () =>
-      updatePreference({ emitter: this._emitter, apiService: this._apiService, args })
+  async update(args: BasePreferenceArgs): Result<Preference>;
+  async update(args: InstancePreferenceArgs): Result<Preference>;
+  async update(args: UpdatePreferenceArgs): Result<Preference> {
+    return this.callWithSession(() =>
+      updatePreference({
+        emitter: this._emitter,
+        apiService: this._inboxService,
+        cache: this.cache,
+        scheduleCache: this.scheduleCache,
+        useCache: this.#useCache,
+        args,
+      })
+    );
+  }
+
+  async bulkUpdate(args: Array<BasePreferenceArgs>): Result<Preference[]>;
+  async bulkUpdate(args: Array<InstancePreferenceArgs>): Result<Preference[]>;
+  async bulkUpdate(args: Array<UpdatePreferenceArgs>): Result<Preference[]> {
+    return this.callWithSession(() =>
+      bulkUpdatePreference({
+        emitter: this._emitter,
+        apiService: this._inboxService,
+        cache: this.cache,
+        scheduleCache: this.scheduleCache,
+        useCache: this.#useCache,
+        args,
+      })
     );
   }
 }

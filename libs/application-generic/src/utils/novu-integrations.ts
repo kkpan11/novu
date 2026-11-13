@@ -1,3 +1,19 @@
+export const areNovuManagedClaudeCredentialsSet = () => {
+  return (
+    typeof process.env.NOVU_MANAGED_CLAUDE_API_KEY !== 'undefined' && process.env.NOVU_MANAGED_CLAUDE_API_KEY !== ''
+  );
+};
+
+export function getNovuManagedClaudeApiKey(): string {
+  const apiKey = process.env.NOVU_MANAGED_CLAUDE_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('NOVU_MANAGED_CLAUDE_API_KEY is not configured');
+  }
+
+  return apiKey;
+}
+
 export const areNovuEmailCredentialsSet = () => {
   return (
     typeof process.env.NOVU_EMAIL_INTEGRATION_API_KEY !== 'undefined' &&
@@ -5,16 +21,25 @@ export const areNovuEmailCredentialsSet = () => {
   );
 };
 
+export const areNovuSlackCredentialsSet = () => {
+  const isClientIdSet =
+    typeof process.env.NOVU_SLACK_INTEGRATION_CLIENT_ID !== 'undefined' &&
+    process.env.NOVU_SLACK_INTEGRATION_CLIENT_ID !== '';
+  const isClientSecretSet =
+    typeof process.env.NOVU_SLACK_INTEGRATION_CLIENT_SECRET !== 'undefined' &&
+    process.env.NOVU_SLACK_INTEGRATION_CLIENT_SECRET !== '';
+
+  return isClientIdSet && isClientSecretSet;
+};
+
 export const areNovuSmsCredentialsSet = () => {
   const isAccountSidSet =
     typeof process.env.NOVU_SMS_INTEGRATION_ACCOUNT_SID !== 'undefined' &&
     process.env.NOVU_SMS_INTEGRATION_ACCOUNT_SID !== '';
   const isTokenSet =
-    typeof process.env.NOVU_SMS_INTEGRATION_TOKEN !== 'undefined' &&
-    process.env.NOVU_SMS_INTEGRATION_TOKEN !== '';
+    typeof process.env.NOVU_SMS_INTEGRATION_TOKEN !== 'undefined' && process.env.NOVU_SMS_INTEGRATION_TOKEN !== '';
   const isSenderSet =
-    typeof process.env.NOVU_SMS_INTEGRATION_SENDER !== 'undefined' &&
-    process.env.NOVU_SMS_INTEGRATION_SENDER !== '';
+    typeof process.env.NOVU_SMS_INTEGRATION_SENDER !== 'undefined' && process.env.NOVU_SMS_INTEGRATION_SENDER !== '';
 
   return isAccountSidSet && isTokenSet && isSenderSet;
 };

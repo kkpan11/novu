@@ -1,26 +1,17 @@
+import { DaysEnum, DigestUnitEnum, MonthlyTypeEnum, OrdinalEnum, OrdinalValueEnum } from '@novu/shared';
 import { differenceInMilliseconds } from 'date-fns';
-import {
-  DaysEnum,
-  DigestUnitEnum,
-  MonthlyTypeEnum,
-  OrdinalEnum,
-  OrdinalValueEnum,
-} from '@novu/shared';
 
 import { TimedDigestDelayService } from './timed-digest-delay.service';
 
 describe('TimedDigestDelayService', () => {
   describe('calculate', () => {
-    let clock: typeof jest;
-
     beforeEach(() => {
-      const date = new Date('2023-05-04T12:00:00Z');
-      clock = jest.useFakeTimers('modern' as FakeTimersConfig);
-      clock.setSystemTime(date.getTime());
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2023-05-04T12:00:00Z'));
     });
 
     afterEach(() => {
-      clock.clearAllTimers();
+      vi.useRealTimers();
     });
 
     describe('minutely schedule', () => {
@@ -30,9 +21,7 @@ describe('TimedDigestDelayService', () => {
           amount: 1,
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(new Date('2023-05-04T12:01:00Z'), new Date())
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-04T12:01:00Z'), new Date()));
       });
 
       it('delay timeout for next 7 minutes', () => {
@@ -41,9 +30,7 @@ describe('TimedDigestDelayService', () => {
           amount: 7,
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(new Date('2023-05-04T12:07:00Z'), new Date())
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-04T12:07:00Z'), new Date()));
       });
     });
 
@@ -54,9 +41,7 @@ describe('TimedDigestDelayService', () => {
           amount: 1,
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(new Date('2023-05-04T13:00:00Z'), new Date())
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-04T13:00:00Z'), new Date()));
       });
 
       it('delay timeout for next 10 hours', () => {
@@ -65,9 +50,7 @@ describe('TimedDigestDelayService', () => {
           amount: 10,
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(new Date('2023-05-04T22:00:00Z'), new Date())
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-04T22:00:00Z'), new Date()));
       });
     });
 
@@ -83,12 +66,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-05T01:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-05T01:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next 4 days', () => {
@@ -102,12 +80,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-08T01:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-08T01:00:00.000Z'), new Date()));
       });
     });
 
@@ -123,12 +96,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-04T09:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-04T09:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next weekly when the time is after the "at time"', () => {
@@ -142,12 +110,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-18T09:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-18T09:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next scheduled weekly on monday', () => {
@@ -162,12 +125,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-01T09:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-01T09:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next scheduled weekly on wednesday', () => {
@@ -182,12 +140,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-03T09:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-03T09:00:00.000Z'), new Date()));
       });
     });
 
@@ -203,12 +156,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-03T12:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-03T12:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next month when the time is after the "at time"', () => {
@@ -222,12 +170,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-08-03T12:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-08-03T12:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next month first day', () => {
@@ -242,12 +185,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-01T12:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-01T12:00:00.000Z'), new Date()));
       });
 
       it('delay timeout for next month fifteenth day', () => {
@@ -262,12 +200,7 @@ describe('TimedDigestDelayService', () => {
           },
         });
 
-        expect(result).toEqual(
-          differenceInMilliseconds(
-            new Date('2023-05-15T12:00:00.000Z'),
-            new Date()
-          )
-        );
+        expect(result).toEqual(differenceInMilliseconds(new Date('2023-05-15T12:00:00.000Z'), new Date()));
       });
 
       describe('with "on the" fields', () => {
@@ -284,12 +217,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-01T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-01T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the second day of the month', () => {
@@ -304,12 +232,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-02T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-02T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the last day of the month', () => {
@@ -325,12 +248,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-30T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-30T12:00:00.000Z'), new Date()));
           });
         });
 
@@ -348,12 +266,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-07-03T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-07-03T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the second weekday of the month', () => {
@@ -369,12 +282,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-07-04T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-07-04T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the last weekday of the month', () => {
@@ -390,12 +298,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-07-31T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-07-31T12:00:00.000Z'), new Date()));
           });
         });
 
@@ -413,12 +316,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-03T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-03T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the second weekend day of the month', () => {
@@ -434,12 +332,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-04T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-04T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the last weekend day of the month', () => {
@@ -455,12 +348,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-25T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-25T12:00:00.000Z'), new Date()));
           });
         });
 
@@ -478,12 +366,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-07T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-07T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the second sunday of the month', () => {
@@ -499,12 +382,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-11T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-11T12:00:00.000Z'), new Date()));
           });
 
           it('delay timeout for the last weekend day of the month', () => {
@@ -520,12 +398,7 @@ describe('TimedDigestDelayService', () => {
               },
             });
 
-            expect(result).toEqual(
-              differenceInMilliseconds(
-                new Date('2023-06-24T12:00:00.000Z'),
-                new Date()
-              )
-            );
+            expect(result).toEqual(differenceInMilliseconds(new Date('2023-06-24T12:00:00.000Z'), new Date()));
           });
         });
       });

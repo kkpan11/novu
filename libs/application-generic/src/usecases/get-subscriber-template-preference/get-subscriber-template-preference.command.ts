@@ -1,17 +1,22 @@
-import { NotificationTemplateEntity, SubscriberEntity } from '@novu/dal';
-import { IsDefined, IsNotEmpty, IsOptional } from 'class-validator';
-
-import { EnvironmentWithSubscriber } from '../../commands';
+import { NotificationTemplateEntity, PreferencesEntity, SubscriberEntity } from '@novu/dal';
 import { ITenantDefine } from '@novu/shared';
+import { IsBoolean, IsDefined, IsOptional } from 'class-validator';
+import { EnvironmentWithSubscriber } from '../../commands';
 
 export class GetSubscriberTemplatePreferenceCommand extends EnvironmentWithSubscriber {
-  @IsNotEmpty()
-  @IsDefined()
   template: NotificationTemplateEntity;
 
   @IsOptional()
-  subscriber?: SubscriberEntity;
+  subscriber?: Pick<SubscriberEntity, '_id'>;
 
   @IsOptional()
   tenant?: ITenantDefine;
+
+  @IsDefined()
+  @IsBoolean()
+  includeInactiveChannels: boolean;
+
+  /** See {@link GetPreferencesCommand.subscriberGlobalPreference}. */
+  @IsOptional()
+  subscriberGlobalPreference?: PreferencesEntity | null;
 }

@@ -119,8 +119,10 @@ def select_headers(headers, include_headers):
     return sign_headers
 
 # FWS  =  ([*WSP CRLF] 1*WSP) /  obs-FWS ; Folding white space  [RFC5322]
-FWS = r'(?:(?:\s*\r?\n)?\s+)?'
-RE_BTAG = re.compile(r'([;\s]b'+FWS+r'=)(?:'+FWS+r'[a-zA-Z0-9+/=])*(?:\r?\n\Z)?')
+# Must be a bytes pattern: it is applied to raw header bytes, and Python 3
+# rejects mixing str patterns with bytes subjects.
+FWS = br'(?:(?:\s*\r?\n)?\s+)?'
+RE_BTAG = re.compile(br'([;\s]b'+FWS+br'=)(?:'+FWS+br'[a-zA-Z0-9+/=])*(?:\r?\n\Z)?')
 
 def hash_headers(hasher, canonicalize_headers, headers, include_headers,
                  sigheader, sig):
@@ -417,8 +419,9 @@ class DKIM(object):
     if include_headers is None:
         include_headers = self.default_sign_headers()
 
-    # rfc4871 says FROM is required
-    if 'from' not in ( x.lower() for x in include_headers ):
+    # rfc4871 says FROM is required. Header names are bytes on Python 3, so
+    # compare with b'from' ('from' never matched and every sign() raised).
+    if b'from' not in ( x.lower() for x in include_headers ):
         raise ParameterError("The From header field MUST be signed")
 
     # raise exception for any SHOULD_NOT headers, call can modify 

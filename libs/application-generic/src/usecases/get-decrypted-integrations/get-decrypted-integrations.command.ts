@@ -1,5 +1,5 @@
-import { IsBoolean, IsEnum, IsOptional } from 'class-validator';
 import { ChannelTypeEnum, ProvidersIdEnum } from '@novu/shared';
+import { IsBoolean, IsEnum, IsOptional } from 'class-validator';
 
 import { EnvironmentWithUserCommand } from '../../commands';
 
@@ -18,6 +18,19 @@ export class GetDecryptedIntegrationsCommand extends EnvironmentWithUserCommand 
 
   @IsOptional()
   providerId?: ProvidersIdEnum;
+
+  @IsBoolean()
+  @IsOptional()
+  returnCredentials?: boolean;
+
+  /**
+   * When true, restrict the query to integrations within `environmentId` only.
+   * Default behavior (false/undefined) returns integrations across every
+   * environment of the organization (legacy JWT/session behavior).
+   */
+  @IsBoolean()
+  @IsOptional()
+  scopeToEnvironment?: boolean;
 }
 
 export class GetEnvironmentDecryptedIntegrationsCommand extends EnvironmentWithUserCommand {
@@ -35,4 +48,8 @@ export class GetEnvironmentDecryptedIntegrationsCommand extends EnvironmentWithU
 
   @IsOptional()
   providerId?: ProvidersIdEnum;
+
+  @IsBoolean()
+  @IsOptional()
+  returnCredentials?: boolean;
 }
