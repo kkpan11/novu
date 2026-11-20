@@ -1,5 +1,5 @@
+import { BaseCommand } from '@novu/application-generic';
 import { IsDefined, IsEmail, IsOptional, IsString } from 'class-validator';
-import { BaseCommand } from '../../../shared/commands/base.command';
 
 export class InitializeSessionCommand extends BaseCommand {
   @IsDefined()
@@ -25,4 +25,8 @@ export class InitializeSessionCommand extends BaseCommand {
   @IsString()
   @IsOptional()
   hmacHash?: string;
+
+  @IsString()
+  @IsOptional()
+  clientVersion?: string;
 }

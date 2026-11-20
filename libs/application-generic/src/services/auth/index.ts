@@ -1,3 +1,2 @@
-export * from './auth.service';
-export * from './user.auth.guard';
+export * from './auth.service.interface';
 export * from './shared';

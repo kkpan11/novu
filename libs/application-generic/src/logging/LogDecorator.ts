@@ -12,13 +12,8 @@ const DEFAULT_OPTIONS: IOptions = {
   timestamp: true,
 };
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 export const LogDecorator = (options = DEFAULT_OPTIONS) => {
-  return (
-    target: any,
-    propertyName: string,
-    descriptor: TypedPropertyDescriptor<any>
-  ): void => {
+  return (target: any, propertyName: string, descriptor: TypedPropertyDescriptor<any>): void => {
     const logger = options?.logger || new Logger(target?.constructor?.name);
     const method = descriptor?.value;
 
@@ -35,9 +30,7 @@ export const LogDecorator = (options = DEFAULT_OPTIONS) => {
 
       const data = await method.apply(this, args);
 
-      const executeTime = options?.timestamp
-        ? `${Date.now() - currentTime}`
-        : '';
+      const executeTime = options?.timestamp ? `${Date.now() - currentTime}` : '';
 
       logger.debug(
         {

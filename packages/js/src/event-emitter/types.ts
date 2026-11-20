@@ -1,109 +1,192 @@
+import type { AgentEventEnvelope } from '@novu/agent-event-protocol';
 import type {
-  FetchCountArgs,
-  FetchFeedArgs,
-  MarkNotificationAsArgs,
-  MarkAllNotificationsAsArgs,
-  MarkNotificationsAsArgs,
-  MarkNotificationActionAsArgs,
+  ChannelConnectionResponse,
+  ChannelEndpointResponse,
+  CreateChannelEndpointArgs,
+  DeleteChannelConnectionArgs,
+  DeleteChannelEndpointArgs,
+  GenerateChatOAuthUrlArgs,
+  GenerateLinkUserOAuthUrlArgs,
+  GetChannelConnectionArgs,
+  GetChannelEndpointArgs,
+  LinkChannelEndpointArgs,
+  LinkChannelEndpointResponse,
+  ListChannelConnectionsArgs,
+  ListChannelEndpointsArgs,
+} from '../channel-connections/types';
+import type {
+  ArchivedArgs,
+  CompleteArgs,
+  CountArgs,
+  CountResponse,
+  DeletedArgs,
+  ListNotificationsArgs,
+  ListNotificationsResponse,
   Notification,
-  RemoveNotificationArgs,
-  RemoveAllNotificationsArgs,
-  RemoveNotificationsArgs,
-} from '../feeds';
+  ReadArgs,
+  RevertArgs,
+  SeenArgs,
+  SnoozeArgs,
+  UnarchivedArgs,
+  UnreadArgs,
+  UnsnoozeArgs,
+} from '../notifications';
 import { Preference } from '../preferences/preference';
-import { FetchPreferencesArgs, UpdatePreferencesArgs } from '../preferences/types';
+import { Schedule } from '../preferences/schedule';
+import { ListPreferencesArgs, UpdatePreferenceArgs, UpdateScheduleArgs } from '../preferences/types';
 import type { InitializeSessionArgs } from '../session';
-import { PaginatedResponse, Session, WebSocketEvent } from '../types';
+import type { TopicSubscription } from '../subscriptions/subscription';
+import { SubscriptionPreference } from '../subscriptions/subscription-preference';
+import type {
+  CreateSubscriptionArgs,
+  DeleteSubscriptionArgs,
+  GetSubscriptionArgs,
+  ListSubscriptionsArgs,
+  UpdateSubscriptionArgs,
+  UpdateSubscriptionPreferenceArgs,
+} from '../subscriptions/types';
+import type { TagsFilter } from '../types';
+import { Session, WebSocketEvent } from '../types';
 
-type NovuPendingEvent<A, O = undefined> = {
+type NovuPendingEvent<A, D = undefined> = {
   args: A;
-  optimistic?: O;
+  data?: D;
 };
-type NovuSuccessEvent<A, R> = Pick<NovuPendingEvent<A>, 'args'> & {
-  result: R;
+type NovuResolvedEvent<A, D> = NovuPendingEvent<A, D> & {
+  error?: unknown;
 };
-type NovuErrorEvent<A, F = undefined> = Pick<NovuPendingEvent<A>, 'args'> & {
-  error: unknown;
-  fallback?: F;
-};
-// three possible status of the event: pending, success, error
-type EventName<T extends string> = `${T}.pending` | `${T}.success` | `${T}.error`;
+// two possible status of the event: pending, resolved
+type EventName<T extends string> = `${T}.pending` | `${T}.resolved`;
 // infer the "status" of the event based on the string `module.action.status`
 type EventStatus<T extends string> = `${T extends `${infer _}.${infer __}.${infer V}` ? V : never}`;
 // based on the key it returns the event pending, success or error object
-type EventObject<
-  K extends string,
-  ARGS,
-  RESULT,
-  OPTIMISTIC = undefined,
-  FALLBACK = undefined,
-  EVENT_STATUS = EventStatus<K>
-> = EVENT_STATUS extends 'pending'
-  ? NovuPendingEvent<ARGS, OPTIMISTIC>
-  : EVENT_STATUS extends 'success'
-  ? NovuSuccessEvent<ARGS, RESULT>
-  : NovuErrorEvent<ARGS, FALLBACK>;
+type EventObject<K extends string, ARGS, DATA, EVENT_STATUS = EventStatus<K>> = EVENT_STATUS extends 'pending'
+  ? NovuPendingEvent<ARGS, DATA>
+  : NovuResolvedEvent<ARGS, DATA>;
 
-type BaseEvents<T extends string, ARGS, RESULT, OPTIMISTIC = undefined, FALLBACK = undefined> = {
-  [key in `${EventName<T>}`]: EventObject<key, ARGS, RESULT, OPTIMISTIC, FALLBACK>;
+type BaseEvents<T extends string, ARGS, DATA> = {
+  [key in `${EventName<T>}`]: EventObject<key, ARGS, DATA>;
 };
 
 type SessionInitializeEvents = BaseEvents<'session.initialize', InitializeSessionArgs, Session>;
-type FeedFetchEvents = BaseEvents<'feeds.fetch', FetchFeedArgs, PaginatedResponse<Notification>>;
-type FeedFetchCountEvents = BaseEvents<'feeds.fetch_count', FetchCountArgs, number>;
-type FeedMarkNotificationsAsEvents = BaseEvents<
-  'feeds.mark_notifications_as',
-  MarkNotificationsAsArgs,
-  Notification[],
-  Notification[],
+type NotificationsFetchEvents = BaseEvents<'notifications.list', ListNotificationsArgs, ListNotificationsResponse>;
+type NotificationsFetchCountEvents = BaseEvents<'notifications.count', CountArgs, CountResponse>;
+type NotificationReadEvents = BaseEvents<'notification.read', ReadArgs, Notification>;
+type NotificationUnreadEvents = BaseEvents<'notification.unread', UnreadArgs, Notification>;
+type NotificationSeenEvents = BaseEvents<'notification.seen', SeenArgs, Notification>;
+type NotificationArchiveEvents = BaseEvents<'notification.archive', ArchivedArgs, Notification>;
+type NotificationUnarchiveEvents = BaseEvents<'notification.unarchive', UnarchivedArgs, Notification>;
+type NotificationDeleteEvents = BaseEvents<'notification.delete', DeletedArgs, Notification>;
+type NotificationSnoozeEvents = BaseEvents<'notification.snooze', SnoozeArgs, Notification>;
+type NotificationUnsnoozeEvents = BaseEvents<'notification.unsnooze', UnsnoozeArgs, Notification>;
+type NotificationCompleteActionEvents = BaseEvents<'notification.complete_action', CompleteArgs, Notification>;
+type NotificationRevertActionEvents = BaseEvents<'notification.revert_action', RevertArgs, Notification>;
+type NotificationsReadAllEvents = BaseEvents<
+  'notifications.read_all',
+  { tags?: TagsFilter; data?: Record<string, unknown> },
   Notification[]
 >;
-type FeedMarkAllNotificationsAsEvents = BaseEvents<
-  'feeds.mark_all_notifications_as',
-  MarkAllNotificationsAsArgs,
-  number
->;
-type FeedRemoveNotificationsEvents = BaseEvents<
-  'feeds.remove_notifications',
-  RemoveNotificationsArgs,
-  Notification[] | undefined,
-  Notification[],
+type NotificationsSeenAllEvents = BaseEvents<
+  'notifications.seen_all',
+  { notificationIds: string[] } | { tags?: TagsFilter; data?: Record<string, unknown> } | {},
   Notification[]
 >;
-type FeedRemoveAllNotificationsEvents = BaseEvents<'feeds.remove_all_notifications', RemoveAllNotificationsArgs, void>;
-type NotificationMarkAsEvents = BaseEvents<
-  'notification.mark_as',
-  MarkNotificationAsArgs,
-  Notification,
-  Notification,
-  Notification
+type NotificationsArchivedAllEvents = BaseEvents<
+  'notifications.archive_all',
+  { tags?: TagsFilter; data?: Record<string, unknown> },
+  Notification[]
 >;
-type NotificationMarkActionAsEvents = BaseEvents<
-  'notification.mark_action_as',
-  MarkNotificationActionAsArgs,
-  Notification,
-  Notification,
-  Notification
+type NotificationsReadArchivedAllEvents = BaseEvents<
+  'notifications.archive_all_read',
+  { tags?: TagsFilter; data?: Record<string, unknown> },
+  Notification[]
 >;
-type NotificationRemoveEvents = BaseEvents<
-  'notification.remove',
-  RemoveNotificationArgs,
-  Notification | undefined,
-  Notification,
-  Notification
+type NotificationsDeletedAllEvents = BaseEvents<
+  'notifications.delete_all',
+  { tags?: TagsFilter; data?: Record<string, unknown> },
+  Notification[]
 >;
-type PreferencesFetchEvents = BaseEvents<'preferences.fetch', FetchPreferencesArgs, Preference[]>;
-type PreferencesUpdateEvents = BaseEvents<'preferences.update', UpdatePreferencesArgs, Preference>;
+type PreferencesFetchEvents = BaseEvents<'preferences.list', ListPreferencesArgs, Preference[]>;
+type PreferenceUpdateEvents = BaseEvents<'preference.update', UpdatePreferenceArgs, Preference>;
+type PreferencesBulkUpdateEvents = BaseEvents<'preferences.bulk_update', Array<UpdatePreferenceArgs>, Preference[]>;
+type PreferenceScheduleGetEvents = BaseEvents<'preference.schedule.get', undefined, Schedule>;
+type PreferenceScheduleUpdateEvents = BaseEvents<'preference.schedule.update', UpdateScheduleArgs, Schedule>;
+type SubscriptionsFetchEvents = BaseEvents<'subscriptions.list', ListSubscriptionsArgs, TopicSubscription[]>;
+type SubscriptionGetEvents = BaseEvents<'subscription.get', GetSubscriptionArgs, TopicSubscription | null>;
+type SubscriptionCreateEvents = BaseEvents<'subscription.create', CreateSubscriptionArgs, TopicSubscription>;
+type SubscriptionUpdateEvents = BaseEvents<'subscription.update', UpdateSubscriptionArgs, TopicSubscription>;
+type SubscriptionPreferenceUpdateEvents = BaseEvents<
+  'subscription.preference.update',
+  UpdateSubscriptionPreferenceArgs,
+  SubscriptionPreference
+>;
+type SubscriptionPreferencesBulkUpdateEvents = BaseEvents<
+  'subscription.preferences.bulk_update',
+  Array<UpdateSubscriptionPreferenceArgs & { subscriptionId: string }>,
+  SubscriptionPreference[]
+>;
+type SubscriptionDeleteEvents = BaseEvents<'subscription.delete', DeleteSubscriptionArgs, void>;
+
+type ChannelConnectionOAuthUrlEvents = BaseEvents<
+  'channel-connection.oauth-url',
+  GenerateChatOAuthUrlArgs,
+  { url: string }
+>;
+type ChannelConnectionsFetchEvents = BaseEvents<
+  'channel-connections.list',
+  ListChannelConnectionsArgs,
+  ChannelConnectionResponse[]
+>;
+type ChannelConnectionGetEvents = BaseEvents<
+  'channel-connection.get',
+  GetChannelConnectionArgs,
+  ChannelConnectionResponse | null
+>;
+type ChannelConnectionDeleteEvents = BaseEvents<'channel-connection.delete', DeleteChannelConnectionArgs, void>;
+
+type ChannelEndpointOAuthUrlEvents = BaseEvents<
+  'channel-endpoint.oauth-url',
+  GenerateLinkUserOAuthUrlArgs,
+  { url: string }
+>;
+type ChannelEndpointsFetchEvents = BaseEvents<
+  'channel-endpoints.list',
+  ListChannelEndpointsArgs,
+  ChannelEndpointResponse[]
+>;
+type ChannelEndpointGetEvents = BaseEvents<
+  'channel-endpoint.get',
+  GetChannelEndpointArgs,
+  ChannelEndpointResponse | null
+>;
+type ChannelEndpointCreateEvents = BaseEvents<
+  'channel-endpoint.create',
+  CreateChannelEndpointArgs,
+  ChannelEndpointResponse
+>;
+type ChannelEndpointDeleteEvents = BaseEvents<'channel-endpoint.delete', DeleteChannelEndpointArgs, void>;
+type ChannelEndpointLinkEvents = BaseEvents<
+  'channel-endpoint.link',
+  LinkChannelEndpointArgs,
+  LinkChannelEndpointResponse
+>;
+
 type SocketConnectEvents = BaseEvents<'socket.connect', { socketUrl: string }, undefined>;
+type SocketDisconnectEvents = {
+  'socket.disconnect.resolved': NovuResolvedEvent<{ socketUrl: string }, undefined>;
+};
 export type NotificationReceivedEvent = `notifications.${WebSocketEvent.RECEIVED}`;
 export type NotificationUnseenEvent = `notifications.${WebSocketEvent.UNSEEN}`;
 export type NotificationUnreadEvent = `notifications.${WebSocketEvent.UNREAD}`;
+export type WebChatAgentEvent = 'web_chat.agent_event';
 type SocketEvents = {
   [key in NotificationReceivedEvent]: { result: Notification };
 } & {
   [key in NotificationUnseenEvent]: { result: number };
 } & {
-  [key in NotificationUnreadEvent]: { result: number };
+  [key in NotificationUnreadEvent]: { result: { total: number; severity: Record<string, number> } };
+} & {
+  [key in WebChatAgentEvent]: { result: AgentEventEnvelope };
 };
 
 /**
@@ -112,29 +195,85 @@ type SocketEvents = {
  * The event name consists of second pattern: module.action.status
  * - module: the name of the module
  * - action: the action that is being performed
- * - status: the status of the action, could be pending, success or error
+ * - status: the status of the action, could be pending or resolved
  *
  * Each event has a corresponding payload that is associated with the event:
  * - pending: the args that are passed to the action and the optional optimistic value
- * - success: the args that are passed to the action and the result of the action
- * - error: the args that are passed to the action, the error that is thrown, and the optional fallback value
+ * - resolved: the args that are passed to the action and the result of the action or the error that is thrown
  */
 export type Events = SessionInitializeEvents &
-  FeedFetchEvents &
-  FeedFetchCountEvents &
-  FeedMarkNotificationsAsEvents &
-  FeedMarkAllNotificationsAsEvents &
-  FeedRemoveNotificationsEvents &
-  FeedRemoveAllNotificationsEvents &
-  NotificationMarkAsEvents &
-  NotificationMarkActionAsEvents &
-  NotificationRemoveEvents &
-  PreferencesFetchEvents &
-  PreferencesUpdateEvents &
+  NotificationsFetchEvents & {
+    'notifications.list.updated': { data: ListNotificationsResponse };
+  } & NotificationsFetchCountEvents &
+  PreferencesFetchEvents & {
+    'preferences.list.updated': { data: Preference[] };
+  } & PreferenceUpdateEvents &
+  PreferencesBulkUpdateEvents &
+  PreferenceScheduleGetEvents &
+  PreferenceScheduleUpdateEvents & {
+    'preference.schedule.get.updated': { data: Schedule };
+  } & SubscriptionsFetchEvents &
+  SubscriptionGetEvents &
+  SubscriptionCreateEvents &
+  SubscriptionPreferenceUpdateEvents &
+  SubscriptionUpdateEvents &
+  SubscriptionPreferencesBulkUpdateEvents &
+  SubscriptionDeleteEvents & {
+    'subscriptions.list.updated': { data: { topicKey: string; subscriptions: TopicSubscription[] } };
+  } & ChannelConnectionOAuthUrlEvents &
+  ChannelConnectionsFetchEvents &
+  ChannelConnectionGetEvents &
+  ChannelConnectionDeleteEvents &
+  ChannelEndpointOAuthUrlEvents &
+  ChannelEndpointsFetchEvents &
+  ChannelEndpointGetEvents &
+  ChannelEndpointCreateEvents &
+  ChannelEndpointDeleteEvents &
+  ChannelEndpointLinkEvents &
   SocketConnectEvents &
-  SocketEvents;
+  SocketDisconnectEvents &
+  SocketEvents &
+  NotificationReadEvents &
+  NotificationUnreadEvents &
+  NotificationSeenEvents &
+  NotificationArchiveEvents &
+  NotificationUnarchiveEvents &
+  NotificationDeleteEvents &
+  NotificationSnoozeEvents &
+  NotificationUnsnoozeEvents &
+  NotificationCompleteActionEvents &
+  NotificationRevertActionEvents &
+  NotificationsReadAllEvents &
+  NotificationsSeenAllEvents &
+  NotificationsArchivedAllEvents &
+  NotificationsReadArchivedAllEvents &
+  NotificationsDeletedAllEvents;
 
 export type EventNames = keyof Events;
 export type SocketEventNames = keyof SocketEvents;
+export type NotificationEvents = keyof (NotificationReadEvents &
+  NotificationUnreadEvents &
+  NotificationSeenEvents &
+  NotificationArchiveEvents &
+  NotificationUnarchiveEvents &
+  NotificationDeleteEvents &
+  NotificationSnoozeEvents &
+  NotificationUnsnoozeEvents &
+  NotificationCompleteActionEvents &
+  NotificationRevertActionEvents &
+  NotificationsReadAllEvents &
+  NotificationsSeenAllEvents &
+  NotificationsArchivedAllEvents &
+  NotificationsReadArchivedAllEvents &
+  NotificationsDeletedAllEvents);
+export type PreferenceEvents = keyof (PreferenceUpdateEvents & PreferencesBulkUpdateEvents);
+export type PreferenceScheduleEvents = keyof (PreferenceScheduleGetEvents & PreferenceScheduleUpdateEvents);
+export type SubscriptionEvents = keyof (SubscriptionsFetchEvents &
+  SubscriptionGetEvents &
+  SubscriptionCreateEvents &
+  SubscriptionPreferenceUpdateEvents &
+  SubscriptionUpdateEvents &
+  SubscriptionPreferencesBulkUpdateEvents &
+  SubscriptionDeleteEvents);
 
 export type EventHandler<T = unknown> = (event: T) => void;

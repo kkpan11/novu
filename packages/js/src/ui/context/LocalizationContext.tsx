@@ -1,39 +1,21 @@
-import { ParentProps, createContext, createMemo, useContext } from 'solid-js';
-import { defaultLocalization } from '../config/default-localization';
-import { Path } from '../helpers/types';
+import { createContext, ParentProps, useContext } from 'solid-js';
+import type { LocalizationStore } from '../core/stores/localization';
 
-export type Localization = {
-  'inbox.title': string;
-};
+export type {
+  AllLocalization,
+  AllLocalizationKey,
+  InboxLocalization,
+  InboxLocalizationKey,
+  StringLocalizationKey,
+  SubscriptionLocalization,
+  SubscriptionLocalizationKey,
+} from '../core/stores/localization';
 
-type LocalizationPath = Path<Localization>;
+const LocalizationContext = createContext<LocalizationStore | undefined>(undefined);
 
-type LocalizationContextType = {
-  t: (key: LocalizationPath) => string;
-};
-
-const LocalizationContext = createContext<LocalizationContextType | undefined>(undefined);
-
-type LocalizationProviderProps = ParentProps & { localization?: Localization };
-
-export const LocalizationProvider = (props: LocalizationProviderProps) => {
-  const localization = createMemo(() => ({ ...defaultLocalization, ...(props.localization || {}) }));
-
-  const t = (key: LocalizationPath) => {
-    const value = localization()[key];
-
-    return value;
-  };
-
-  return (
-    <LocalizationContext.Provider
-      value={{
-        t,
-      }}
-    >
-      {props.children}
-    </LocalizationContext.Provider>
-  );
+/** Adapter over the core localization store; keeps the `t` and `locale` API the components read. */
+export const LocalizationProvider = (props: ParentProps<{ store: LocalizationStore }>) => {
+  return <LocalizationContext.Provider value={props.store}>{props.children}</LocalizationContext.Provider>;
 };
 
 export function useLocalization() {

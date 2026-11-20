@@ -1,42 +1,46 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  CreateOrUpdateSubscriberCommand,
+  CreateOrUpdateSubscriberUseCase,
+  InstrumentUsecase,
+  LogDecorator,
+  SelectIntegration,
+  SelectIntegrationCommand,
+} from '@novu/application-generic';
 import { EnvironmentRepository } from '@novu/dal';
 import { ChannelTypeEnum, InAppProviderIdEnum } from '@novu/shared';
+import { ApiKeyRevocationService } from '../../../auth/api-key-revocation/api-key-revocation.service';
+import { AuthService } from '../../../auth/services/auth.service';
+import { isHmacValidForAnyKey } from '../../../shared/helpers/is-valid-hmac';
 import {
-  AnalyticsService,
-  LogDecorator,
-  CreateSubscriber,
-  CreateSubscriberCommand,
-  SelectIntegrationCommand,
-  SelectIntegration,
-  AuthService,
-  createHash,
-  decryptApiKey,
-} from '@novu/application-generic';
-
-import { ApiException } from '../../../shared/exceptions/api.exception';
-import { InitializeSessionCommand } from './initialize-session.command';
+  SubscriberSessionAuthStatsService,
+  SubscriberSessionSourceEnum,
+} from '../../../shared/services/subscriber-session-auth-stats.service';
 
 import { SessionInitializeResponseDto } from '../../dtos/session-initialize-response.dto';
+import { InitializeSessionCommand } from './initialize-session.command';
 
 @Injectable()
 export class InitializeSession {
   constructor(
     private environmentRepository: EnvironmentRepository,
-    private createSubscriber: CreateSubscriber,
+    private createOrUpdateSubscriberUsecase: CreateOrUpdateSubscriberUseCase,
     private authService: AuthService,
     private selectIntegration: SelectIntegration,
-    private analyticsService: AnalyticsService
+    private subscriberSessionAuthStatsService: SubscriberSessionAuthStatsService,
+    private apiKeyRevocationService: ApiKeyRevocationService
   ) {}
 
   @LogDecorator()
+  @InstrumentUsecase()
   async execute(command: InitializeSessionCommand): Promise<SessionInitializeResponseDto> {
     const environment = await this.environmentRepository.findEnvironmentByIdentifier(command.applicationIdentifier);
 
     if (!environment) {
-      throw new ApiException('Please provide a valid app identifier');
+      throw new BadRequestException('Please provide a valid app identifier');
     }
 
-    const inAppIntegration = await this.selectIntegration.execute(
+    const selection = await this.selectIntegration.execute(
       SelectIntegrationCommand.create({
         environmentId: environment._id,
         organizationId: environment._organizationId,
@@ -46,33 +50,57 @@ export class InitializeSession {
       })
     );
 
-    if (!inAppIntegration) {
+    if (!selection) {
       throw new NotFoundException('In app integration could not be found');
     }
+    const { integration: inAppIntegration } = selection;
 
-    if (inAppIntegration.credentials.hmac) {
-      validateNotificationCenterEncryption(environment, command);
+    const signingKeys = await this.apiKeyRevocationService.getSigningKeys({
+      organizationId: environment._organizationId,
+      environmentId: environment._id,
+      apiKeys: environment.apiKeys,
+    });
+    const hmacValid = isHmacValidForAnyKey(signingKeys, command.subscriberId, command.hmacHash);
+
+    // Before the check below, so a hash rejected because its key no longer signs is recorded too.
+    await this.apiKeyRevocationService.recordOldKeySubscriberHash({
+      organizationId: environment._organizationId,
+      environmentId: environment._id,
+      apiKeys: environment.apiKeys,
+      signingKeys,
+      subscriberId: command.subscriberId,
+      subscriberHash: command.hmacHash,
+      source: SubscriberSessionSourceEnum.LEGACY_WIDGET,
+    });
+
+    if (inAppIntegration.credentials.hmac && !hmacValid) {
+      throw new BadRequestException('Please provide a valid HMAC hash');
     }
 
-    const commandos = CreateSubscriberCommand.create({
-      environmentId: environment._id,
-      organizationId: environment._organizationId,
-      subscriberId: command.subscriberId,
-      firstName: command.firstName,
-      lastName: command.lastName,
-      email: command.email,
-      phone: command.phone,
-    });
-    const subscriber = await this.createSubscriber.execute(commandos);
+    const subscriber = await this.createOrUpdateSubscriberUsecase.execute(
+      CreateOrUpdateSubscriberCommand.create({
+        environmentId: environment._id,
+        organizationId: environment._organizationId,
+        subscriberId: command.subscriberId,
+        firstName: command.firstName,
+        lastName: command.lastName,
+        email: command.email,
+        phone: command.phone,
+        allowUpdate: hmacValid,
+      })
+    );
 
-    this.analyticsService.mixpanelTrack('Initialize Widget Session - [Notification Center]', '', {
-      _organization: environment._organizationId,
-      environmentName: environment.name,
-      _subscriber: subscriber._id,
+    const token = await this.authService.getSubscriberWidgetToken(subscriber, []);
+
+    void this.subscriberSessionAuthStatsService.record({
+      environmentId: environment._id,
+      hmacValid,
+      clientVersion: command.clientVersion,
+      source: SubscriberSessionSourceEnum.LEGACY_WIDGET,
     });
 
     return {
-      token: await this.authService.getSubscriberWidgetToken(subscriber),
+      token,
       profile: {
         _id: subscriber._id,
         firstName: subscriber.firstName,
@@ -80,13 +108,5 @@ export class InitializeSession {
         phone: subscriber.phone,
       },
     };
-  }
-}
-
-function validateNotificationCenterEncryption(environment, command: InitializeSessionCommand) {
-  const key = decryptApiKey(environment.apiKeys[0].key);
-  const hmacHash = createHash(key, command.subscriberId);
-  if (hmacHash !== command.hmacHash) {
-    throw new ApiException('Please provide a valid HMAC hash');
   }
 }

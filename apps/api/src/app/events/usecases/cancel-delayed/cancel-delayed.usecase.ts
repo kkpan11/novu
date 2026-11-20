@@ -1,59 +1,84 @@
 import { Injectable } from '@nestjs/common';
-
-import { JobStatusEnum, JobRepository, JobEntity } from '@novu/dal';
-import { StepTypeEnum } from '@novu/shared';
-import { isActionStepType, isMainDigest } from '@novu/application-generic';
+import {
+  isActionStepType,
+  isMainDigest,
+  LogRepository,
+  MessageInteractionService,
+  MessageInteractionTrace,
+  PinoLogger,
+  StepRunRepository,
+  StepRunV2Writer,
+  StepType,
+} from '@novu/application-generic';
+import { JobEntity, JobRepository, JobStatusEnum } from '@novu/dal';
+import { DeliveryLifecycleDetail, DeliveryLifecycleStatusEnum, StepTypeEnum } from '@novu/shared';
 
 import { CancelDelayedCommand } from './cancel-delayed.command';
 
-type PartialJob = Pick<JobEntity, '_id' | 'type' | 'status' | '_environmentId' | '_subscriberId'>;
-
 @Injectable()
 export class CancelDelayed {
-  constructor(private jobRepository: JobRepository) {}
+  constructor(
+    private jobRepository: JobRepository,
+    private stepRunRepository: StepRunRepository,
+    private messageInteractionService: MessageInteractionService,
+    private logger: PinoLogger,
+    private stepRunV2Writer: StepRunV2Writer
+  ) {
+    this.logger.setContext(this.constructor.name);
+  }
 
   public async execute(command: CancelDelayedCommand): Promise<boolean> {
-    let transactionJobs: PartialJob[] = await this.jobRepository.find(
-      {
-        _environmentId: command.environmentId,
-        transactionId: command.transactionId,
-        status: [JobStatusEnum.DELAYED, JobStatusEnum.MERGED],
-      },
-      '_id type status _environmentId _subscriberId'
-    );
+    let jobs: JobEntity[] = await this.jobRepository.find({
+      _environmentId: command.environmentId,
+      transactionId: command.transactionId,
+      status: [JobStatusEnum.DELAYED, JobStatusEnum.MERGED],
+    });
 
-    if (!transactionJobs?.length) {
+    if (!jobs?.length) {
       return false;
     }
 
-    if (transactionJobs.find((job) => job.type && isActionStepType(job.type))) {
-      const possiblePendingJobs: PartialJob[] = await this.jobRepository.find(
-        {
-          _environmentId: command.environmentId,
-          transactionId: command.transactionId,
-          status: [JobStatusEnum.PENDING],
-        },
-        '_id type status _environmentId _subscriberId'
-      );
+    if (jobs.find((job) => job.type && isActionStepType(job.type))) {
+      const possiblePendingJobs: JobEntity[] = await this.jobRepository.find({
+        _environmentId: command.environmentId,
+        transactionId: command.transactionId,
+        status: [JobStatusEnum.PENDING],
+      });
 
-      transactionJobs = [...transactionJobs, ...possiblePendingJobs];
+      jobs = [...jobs, ...possiblePendingJobs];
     }
 
     await this.jobRepository.update(
       {
         _environmentId: command.environmentId,
         _id: {
-          $in: transactionJobs.map((job) => job._id),
+          $in: jobs.map((job) => job._id),
         },
       },
       {
         $set: {
           status: JobStatusEnum.CANCELED,
+          deliveryLifecycleState: {
+            status: DeliveryLifecycleStatusEnum.CANCELED,
+            detail: DeliveryLifecycleDetail.EXECUTION_CANCELED_BY_USER,
+          },
         },
       }
     );
 
-    const mainDigestJob = transactionJobs.find((job) => isMainDigest(job.type, job.status));
+    this.stepRunV2Writer.writeByIds({
+      environmentId: command.environmentId,
+      organizationId: command.organizationId,
+      jobIds: jobs.map((job) => job._id),
+    });
+
+    await this.recordCancellationTraces(jobs);
+
+    await this.stepRunRepository.createMany(jobs, {
+      status: JobStatusEnum.CANCELED,
+    });
+
+    const mainDigestJob = jobs.find((job) => isMainDigest(job.type, job.status));
 
     if (!mainDigestJob) {
       return true;
@@ -62,7 +87,7 @@ export class CancelDelayed {
     return await this.assignNextDigestJob(mainDigestJob);
   }
 
-  private async assignNextDigestJob(job: PartialJob) {
+  private async assignNextDigestJob(job: JobEntity) {
     const mainFollowerDigestJob = await this.jobRepository.findOne(
       {
         _mergedDigestId: job._id,
@@ -82,8 +107,12 @@ export class CancelDelayed {
       return true;
     }
 
+    await this.stepRunRepository.create(mainFollowerDigestJob, {
+      status: JobStatusEnum.DELAYED,
+    });
+
     // update new main follower from Merged to Delayed
-    await this.jobRepository.update(
+    const promotedFollower = await this.jobRepository.findOneAndUpdate(
       {
         _environmentId: job._environmentId,
         status: JobStatusEnum.MERGED,
@@ -94,15 +123,18 @@ export class CancelDelayed {
           status: JobStatusEnum.DELAYED,
           _mergedDigestId: null,
         },
-      }
+      },
+      { new: true }
     );
+    this.stepRunV2Writer.write(promotedFollower);
 
     // update all main follower children jobs to pending status
-    await this.jobRepository.updateAllChildJobStatus(
+    const followerChildJobs = await this.jobRepository.updateAllChildJobStatus(
       mainFollowerDigestJob,
       JobStatusEnum.PENDING,
       mainFollowerDigestJob._id
     );
+    this.stepRunV2Writer.writeMany(followerChildJobs);
 
     // update all jobs that were merged into the old main digest job to point to the new follower
     await this.jobRepository.update(
@@ -119,5 +151,68 @@ export class CancelDelayed {
     );
 
     return true;
+  }
+
+  private async recordCancellationTraces(jobs: JobEntity[]): Promise<void> {
+    try {
+      const interactionTraces: MessageInteractionTrace[] = jobs.map((job) => ({
+        created_at: LogRepository.formatDateTime64(new Date()),
+        organization_id: job._organizationId,
+        environment_id: job._environmentId,
+        user_id: job._userId || '',
+        subscriber_id: job._subscriberId ?? '',
+        external_subscriber_id: job.subscriberId ?? '',
+        event_type: 'step_canceled' as const,
+        title: 'Step canceled',
+        message: 'Step execution was canceled by Novu platform user',
+        raw_data: JSON.stringify({
+          message: 'Step execution was canceled by Novu platform user',
+        }),
+        status: 'success' as const,
+        entity_id: job._id,
+        step_run_type: this.mapStepTypeEnumToStepType(job.type) ?? '',
+        workflow_run_identifier: job.identifier || '',
+        _notificationId: job._notificationId,
+        workflow_id: job._templateId,
+        provider_id: '',
+      }));
+
+      await this.messageInteractionService.trace(
+        interactionTraces,
+        DeliveryLifecycleStatusEnum.CANCELED,
+        DeliveryLifecycleDetail.EXECUTION_CANCELED_BY_USER
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Failed to create cancel traces');
+    }
+  }
+
+  private mapStepTypeEnumToStepType(stepType: StepTypeEnum | undefined): StepType | null {
+    switch (stepType) {
+      case StepTypeEnum.EMAIL:
+        return 'email';
+      case StepTypeEnum.SMS:
+        return 'sms';
+      case StepTypeEnum.IN_APP:
+        return 'in_app';
+      case StepTypeEnum.PUSH:
+        return 'push';
+      case StepTypeEnum.CHAT:
+        return 'chat';
+      case StepTypeEnum.DIGEST:
+        return 'digest';
+      case StepTypeEnum.THROTTLE:
+        return 'throttle';
+      case StepTypeEnum.TRIGGER:
+        return 'trigger';
+      case StepTypeEnum.DELAY:
+        return 'delay';
+      case StepTypeEnum.CUSTOM:
+        return 'custom';
+      case StepTypeEnum.HTTP_REQUEST:
+        return 'http_request';
+      default:
+        return null;
+    }
   }
 }

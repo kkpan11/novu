@@ -1,24 +1,62 @@
 import type { MessageEntity } from '@novu/dal';
-import { ButtonTypeEnum } from '@novu/shared';
+import {
+  ButtonTypeEnum,
+  MessageActionStatusEnum,
+  ResourceOriginEnum,
+  ResourceTypeEnum,
+  SeverityLevelEnum,
+  sanitizeInAppRedirect,
+} from '@novu/shared';
 
-import type { InboxNotification, Subscriber } from './types';
+import { InboxNotificationDto, InboxSubscriberResponseDto } from '../dtos/inbox-notification.dto';
 
-const mapSingleItem = ({
-  _id,
-  content,
-  read,
-  archived,
-  createdAt,
-  lastReadDate,
-  archivedAt,
-  channel,
-  subscriber,
-  actorSubscriber,
-  actor,
-  cta,
-  tags,
-}: MessageEntity): InboxNotification => {
-  const to: Subscriber = {
+function isV0WorkflowTemplate(template: NonNullable<MessageEntity['template']>): boolean {
+  if (template.type === ResourceTypeEnum.REGULAR || template.origin === ResourceOriginEnum.NOVU_CLOUD_V1) {
+    return true;
+  }
+
+  return template.type === undefined && template.origin === undefined;
+}
+
+function resolveNotificationData(message: MessageEntity): Record<string, unknown> | undefined {
+  if (message.data != null) {
+    return message.data;
+  }
+
+  const template = message.template;
+
+  if (template && isV0WorkflowTemplate(template) && message.payload) {
+    return message.payload;
+  }
+
+  return undefined;
+}
+
+const mapSingleItem = (message: MessageEntity): InboxNotificationDto => {
+  const {
+    _id,
+    content,
+    read,
+    seen,
+    archived,
+    snoozedUntil,
+    deliveredAt,
+    createdAt,
+    lastReadDate,
+    firstSeenDate,
+    archivedAt,
+    channel,
+    subscriber,
+    subject,
+    avatar,
+    cta,
+    tags,
+    severity,
+    template,
+    transactionId,
+  } = message;
+  const data = resolveNotificationData(message);
+  const to: InboxSubscriberResponseDto = {
     id: subscriber?._id ?? '',
     firstName: subscriber?.firstName,
     lastName: subscriber?.lastName,
@@ -27,38 +65,55 @@ const mapSingleItem = ({
   };
   const primaryCta = cta.action?.buttons?.find((button) => button.type === ButtonTypeEnum.PRIMARY);
   const secondaryCta = cta.action?.buttons?.find((button) => button.type === ButtonTypeEnum.SECONDARY);
+  const actionType = cta.action?.result?.type;
+  const actionStatus = cta.action?.status;
 
   return {
     id: _id,
-    // subject: subject,
+    transactionId,
+    subject,
     body: content as string,
     to,
-    read,
-    archived,
+    isRead: read,
+    isSeen: seen,
+    isArchived: archived,
+    isSnoozed: !!snoozedUntil,
+    ...(deliveredAt && {
+      deliveredAt,
+    }),
+    ...(snoozedUntil && {
+      snoozedUntil,
+    }),
     createdAt,
     readAt: lastReadDate,
+    firstSeenAt: firstSeenDate,
     archivedAt,
-    actor: actorSubscriber
-      ? {
-          id: actorSubscriber._id,
-          firstName: actorSubscriber.firstName,
-          lastName: actorSubscriber.lastName,
-          avatar: actorSubscriber.avatar,
-          subscriberId: actorSubscriber.subscriberId,
-        }
-      : undefined,
-    avatar: actor,
+    avatar,
     primaryAction: primaryCta && {
-      type: primaryCta.type,
       label: primaryCta.content,
-      url: cta?.data.url,
+      isCompleted: actionType === ButtonTypeEnum.PRIMARY && actionStatus === MessageActionStatusEnum.DONE,
+      redirect: sanitizeInAppRedirect(primaryCta.url, primaryCta.target),
     },
     secondaryAction: secondaryCta && {
-      type: secondaryCta.type,
       label: secondaryCta.content,
+      isCompleted: actionType === ButtonTypeEnum.SECONDARY && actionStatus === MessageActionStatusEnum.DONE,
+      redirect: sanitizeInAppRedirect(secondaryCta.url, secondaryCta.target),
     },
     channelType: channel,
     tags,
+    severity: severity ?? SeverityLevelEnum.NONE,
+    redirect: sanitizeInAppRedirect(cta.data?.url, cta.data?.target),
+    data,
+    workflow: template
+      ? {
+          critical: template.critical,
+          id: template._id,
+          identifier: template.triggers?.[0]?.identifier,
+          name: template.name,
+          tags: template.tags,
+          severity: template.severity ?? SeverityLevelEnum.NONE,
+        }
+      : undefined,
   };
 };
 
@@ -66,8 +121,8 @@ const mapSingleItem = ({
  * Currently the message entity has a generic interface for the messages from the different channels,
  * so we need to map it to a Notification DTO that is specific message interface for the in-app channel.
  */
-export function mapToDto(notification: MessageEntity): InboxNotification;
-export function mapToDto(notification: MessageEntity[]): InboxNotification[];
-export function mapToDto(notification: MessageEntity | MessageEntity[]): InboxNotification | InboxNotification[] {
+export function mapToDto(notification: MessageEntity): InboxNotificationDto;
+export function mapToDto(notification: MessageEntity[]): InboxNotificationDto[];
+export function mapToDto(notification: MessageEntity | MessageEntity[]): InboxNotificationDto | InboxNotificationDto[] {
   return Array.isArray(notification) ? notification.map((el) => mapSingleItem(el)) : mapSingleItem(notification);
 }

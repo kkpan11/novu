@@ -1,16 +1,22 @@
 import { TwilioSmsProvider } from '@novu/providers';
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
+import { ChannelTypeEnum, ICredentials, SmsProviderIdEnum } from '@novu/shared';
 import { BaseSmsHandler } from './base.handler';
 
 export class TwilioHandler extends BaseSmsHandler {
   constructor() {
-    super('twilio', ChannelTypeEnum.SMS);
+    super(SmsProviderIdEnum.Twilio, ChannelTypeEnum.SMS);
   }
   buildProvider(credentials: ICredentials) {
+    const auth =
+      credentials.authMethod === 'apiKey'
+        ? { apiKeySid: credentials.apiKey, apiKeySecret: credentials.secretKey }
+        : { authToken: credentials.token };
+
     this.provider = new TwilioSmsProvider({
       accountSid: credentials.accountSid,
-      authToken: credentials.token,
+      ...auth,
       from: credentials.from,
+      region: credentials.region,
     });
   }
 }

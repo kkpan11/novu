@@ -1,11 +1,9 @@
 import { Module } from '@nestjs/common';
-import { AnalyticsController } from './analytics.controller';
 import { SharedModule } from '../shared/shared.module';
-import { AuthModule } from '../auth/auth.module';
+import { AnalyticsController } from './analytics.controller';
 
 @Module({
-  imports: [SharedModule, AuthModule],
+  imports: [SharedModule],
   controllers: [AnalyticsController],
-  providers: [],
 })
 export class AnalyticsModule {}

@@ -1,18 +1,22 @@
-import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { PinoLogger } from '@novu/application-generic';
 import { ChangeRepository } from '@novu/dal';
 import { ChangeEntityTypeEnum } from '@novu/shared';
-
+import type { WrapperType } from '../../../shared/wrapper-type';
 import { ApplyChange, ApplyChangeCommand } from '../apply-change';
 import { PromoteTypeChangeCommand } from '../promote-type-change.command';
-import { ModuleRef } from '@nestjs/core';
 
 @Injectable()
 export class PromoteTranslationChange {
   constructor(
     private moduleRef: ModuleRef,
-    @Inject(forwardRef(() => ApplyChange)) private applyChange: ApplyChange,
-    private changeRepository: ChangeRepository
-  ) {}
+    @Inject(forwardRef(() => ApplyChange)) private applyChange: WrapperType<ApplyChange>,
+    private changeRepository: ChangeRepository,
+    private logger: PinoLogger
+  ) {
+    this.logger.setContext(this.constructor.name);
+  }
 
   async execute(command: PromoteTypeChangeCommand) {
     try {
@@ -26,7 +30,7 @@ export class PromoteTranslationChange {
         await usecase.execute(command, this.applyGroupChange.bind(this));
       }
     } catch (e) {
-      Logger.error(e, `Unexpected error while importing enterprise modules`, 'PromoteTranslationChange');
+      this.logger.error({ err: e }, `Unexpected error while importing enterprise modules`);
     }
   }
 

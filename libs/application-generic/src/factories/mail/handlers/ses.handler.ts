@@ -1,20 +1,20 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
-import { SESConfig } from '@novu/providers';
-import { SESEmailProvider } from '@novu/providers';
-import { BaseHandler } from './base.handler';
+import { SESConfig, SESEmailProvider } from '@novu/providers';
+import { ChannelTypeEnum, EmailProviderIdEnum, IConfigurations, ICredentials } from '@novu/shared';
+import { BaseEmailHandler } from './base.handler';
 
-export class SESHandler extends BaseHandler {
+export class SESHandler extends BaseEmailHandler {
   constructor() {
-    super('ses', ChannelTypeEnum.EMAIL);
+    super(EmailProviderIdEnum.SES, ChannelTypeEnum.EMAIL);
   }
 
-  buildProvider(credentials: ICredentials, from?: string) {
+  buildProvider(credentials: ICredentials & IConfigurations, from?: string) {
     const config: SESConfig = {
       region: credentials.region as string,
       accessKeyId: credentials.apiKey as string,
       secretAccessKey: credentials.secretKey as string,
       senderName: credentials.senderName ?? 'no-reply',
       from: from as string,
+      configurationSetName: credentials.configurationSetName,
     };
 
     this.provider = new SESEmailProvider(config);

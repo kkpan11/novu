@@ -1,17 +1,16 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { ActorTypeEnum, ChannelTypeEnum } from '@novu/shared';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   AnalyticsService,
   buildFeedKey,
   buildSubscriberKey,
-  CachedEntity,
   CachedQuery,
+  CachedResponse,
+  InstrumentUsecase,
 } from '@novu/application-generic';
 import { MessageRepository, SubscriberEntity, SubscriberRepository } from '@novu/dal';
-
-import { GetNotificationsFeedCommand } from './get-notifications-feed.command';
-import { ApiException } from '../../../shared/exceptions/api.exception';
+import { ActorTypeEnum, ChannelTypeEnum, sanitizeMessageCta } from '@novu/shared';
 import { FeedResponseDto } from '../../dtos/feeds-response.dto';
+import { GetNotificationsFeedCommand } from './get-notifications-feed.command';
 
 @Injectable()
 export class GetNotificationsFeed {
@@ -33,14 +32,7 @@ export class GetNotificationsFeed {
     }
   }
 
-  @CachedQuery({
-    builder: ({ environmentId, subscriberId, ...command }: GetNotificationsFeedCommand) =>
-      buildFeedKey().cache({
-        environmentId: environmentId,
-        subscriberId: subscriberId,
-        ...command,
-      }),
-  })
+  @InstrumentUsecase()
   async execute(command: GetNotificationsFeedCommand): Promise<FeedResponseDto> {
     const payload = this.getPayloadObject(command.payload);
 
@@ -50,10 +42,10 @@ export class GetNotificationsFeed {
     });
 
     if (!subscriber) {
-      throw new ApiException(
-        'Subscriber not found for this environment with the id: ' +
-          command.subscriberId +
-          '. Make sure to create a subscriber before fetching the feed.'
+      throw new BadRequestException(
+        `Subscriber not found for this environment with the id: ${
+          command.subscriberId
+        }. Make sure to create a subscriber before fetching the feed.`
       );
     }
 
@@ -103,18 +95,22 @@ export class GetNotificationsFeed {
     const hasMore = feed.length < totalCount;
     totalCount = Math.min(totalCount, command.limit);
 
-    const data = feed.map((el) => ({ ...el, content: el.content as string }));
+    const data = feed.map((el) => ({
+      ...el,
+      content: el.content as string,
+      cta: sanitizeMessageCta(el.cta),
+    }));
 
     return {
       data,
-      totalCount: totalCount,
-      hasMore: hasMore,
+      totalCount,
+      hasMore,
       pageSize: command.limit,
       page: command.page,
     };
   }
 
-  @CachedEntity({
+  @CachedResponse({
     builder: (command: { subscriberId: string; _environmentId: string }) =>
       buildSubscriberKey({
         _environmentId: command._environmentId,

@@ -1,11 +1,11 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
 import { SparkPostEmailProvider } from '@novu/providers';
+import { ChannelTypeEnum, EmailProviderIdEnum, ICredentials } from '@novu/shared';
 
-import { BaseHandler } from './base.handler';
+import { BaseEmailHandler } from './base.handler';
 
-export class SparkPostHandler extends BaseHandler {
+export class SparkPostHandler extends BaseEmailHandler {
   constructor() {
-    super('sparkpost', ChannelTypeEnum.EMAIL);
+    super(EmailProviderIdEnum.SparkPost, ChannelTypeEnum.EMAIL);
   }
   buildProvider(credentials: ICredentials, from?: string) {
     const config = {

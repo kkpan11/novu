@@ -1,12 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import {
-  TopicSubscribersEntity,
-  TopicSubscribersRepository,
-  TopicRepository,
-} from '@novu/dal';
+import { TopicRepository, TopicSubscribersEntity, TopicSubscribersRepository } from '@novu/dal';
 
-import { GetTopicSubscribersCommand } from './get-topic-subscribers.command';
 import { ITopicSubscriber } from '@novu/shared';
+import { GetTopicSubscribersCommand } from './get-topic-subscribers.command';
 
 @Injectable()
 export class GetTopicSubscribersUseCase {
@@ -22,17 +18,14 @@ export class GetTopicSubscribersUseCase {
       command.environmentId
     );
     if (!topic) {
-      throw new NotFoundException(
-        `Topic with key ${command.topicKey} not found in current environment`
-      );
+      throw new NotFoundException(`Topic with key ${command.topicKey} not found in current environment`);
     }
 
-    const topicSubscribers =
-      await this.topicSubscribersRepository.findSubscribersByTopicId(
-        command.environmentId,
-        command.organizationId,
-        topic._id
-      );
+    const topicSubscribers = await this.topicSubscribersRepository.findSubscribersByTopicId(
+      command.environmentId,
+      command.organizationId,
+      topic._id
+    );
 
     if (!topicSubscribers) {
       throw new NotFoundException(
@@ -43,9 +36,7 @@ export class GetTopicSubscribersUseCase {
     return topicSubscribers.map(this.mapFromEntity);
   }
 
-  private mapFromEntity(
-    topicSubscriber: TopicSubscribersEntity
-  ): ITopicSubscriber {
+  private mapFromEntity(topicSubscriber: TopicSubscribersEntity): ITopicSubscriber {
     return {
       ...topicSubscriber,
       topicKey: topicSubscriber.topicKey,

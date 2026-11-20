@@ -1,22 +1,21 @@
 import { faker } from '@faker-js/faker';
-import { UserEntity, UserRepository } from '@novu/dal';
+import { CommunityUserRepository, UserEntity } from '@novu/dal';
 import { normalizeEmail } from '@novu/shared';
-import * as bcrypt from 'bcrypt';
-
+import { hash } from 'bcrypt';
+import { TEST_USER_PASSWORD } from './constants';
 import { EnvironmentService } from './environment.service';
 import { OrganizationService } from './organization.service';
-import { TEST_USER_PASSWORD } from './constants';
 
 export class UserService {
   private environmentService = new EnvironmentService();
   private organizationService = new OrganizationService();
-  private userRepository = new UserRepository();
+  private userRepository = new CommunityUserRepository();
 
   async createTestUser(): Promise<UserEntity> {
     const user = await this.createUser({
       email: this.randomEmail(),
-      firstName: faker.name.firstName(),
-      lastName: faker.name.lastName(),
+      firstName: faker.person.firstName(),
+      lastName: faker.person.lastName(),
       password: this.testPassword(),
     });
 
@@ -24,19 +23,19 @@ export class UserService {
 
     await this.organizationService.addMember(organization._id, user._id);
 
-    await this.environmentService.createEnvironment(organization._id, user._id);
+    await this.environmentService.createDevelopmentEnvironment(organization._id, user._id);
 
     return user;
   }
 
   async createUser(userEntity?: Partial<UserEntity>): Promise<UserEntity> {
     const password = userEntity?.password ?? faker.internet.password();
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await hash(password, 10);
 
     const user = await this.userRepository.create({
       email: normalizeEmail(userEntity?.email ?? faker.internet.email()),
-      firstName: userEntity?.firstName ?? faker.name.firstName(),
-      lastName: userEntity?.lastName ?? faker.name.lastName(),
+      firstName: userEntity?.firstName ?? faker.person.firstName(),
+      lastName: userEntity?.lastName ?? faker.person.lastName(),
       password: passwordHash,
       profilePicture: `https://randomuser.me/api/portraits/men/${Math.floor(Math.random() * 60) + 1}.jpg`,
       tokens: [],
@@ -47,9 +46,7 @@ export class UserService {
   }
 
   async getUser(id: string): Promise<UserEntity> {
-    const user = await this.userRepository.findOne({
-      _id: id,
-    });
+    const user = await this.userRepository.findById(id);
 
     if (!user) {
       throw new Error(`Test user with ${id} not found`);

@@ -1,10 +1,10 @@
-import { ChannelTypeEnum, ICredentials } from '@novu/shared';
-import { BaseSmsHandler } from './base.handler';
 import { BrevoSmsProvider } from '@novu/providers';
+import { ChannelTypeEnum, ICredentials, SmsProviderIdEnum } from '@novu/shared';
+import { BaseSmsHandler } from './base.handler';
 
 export class BrevoSmsHandler extends BaseSmsHandler {
   constructor() {
-    super('brevo-sms', ChannelTypeEnum.SMS);
+    super(SmsProviderIdEnum.BrevoSms, ChannelTypeEnum.SMS);
   }
   buildProvider(credentials: ICredentials) {
     if (!credentials.apiKey || !credentials.from) {

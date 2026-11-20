@@ -1,70 +1,269 @@
-import type { ApiService } from '@novu/client';
-
+import { InboxService } from '../api';
+import { PreferencesCache } from '../cache/preferences-cache';
+import { ScheduleCache } from '../cache/schedule-cache';
 import type { NovuEventEmitter } from '../event-emitter';
-import type { TODO } from '../types';
-import { PreferenceLevel } from '../types';
+import type { ChannelPreference, Result } from '../types';
+import { ChannelType, PreferenceLevel } from '../types';
+import { NovuError } from '../utils/errors';
 import { Preference } from './preference';
-import type { UpdatePreferencesArgs } from './types';
+import { Schedule } from './schedule';
+import type { UpdatePreferenceArgs, UpdateScheduleArgs } from './types';
 
-export const mapPreference = (apiPreference: {
-  template?: TODO;
-  preference: {
-    enabled: boolean;
-    channels: {
-      email?: boolean;
-      sms?: boolean;
-      in_app?: boolean;
-      chat?: boolean;
-      push?: boolean;
-    };
-  };
-}): Preference => {
-  const { template: workflow, preference } = apiPreference;
-  const hasWorkflow = workflow !== undefined;
-  const level = hasWorkflow ? PreferenceLevel.TEMPLATE : PreferenceLevel.GLOBAL;
+type UpdatePreferenceParams = {
+  emitter: NovuEventEmitter;
+  apiService: InboxService;
+  cache: PreferencesCache;
+  scheduleCache: ScheduleCache;
+  useCache: boolean;
+  args: UpdatePreferenceArgs;
+};
 
-  return new Preference({
-    level,
-    enabled: preference.enabled,
-    channels: preference.channels,
-    workflow: hasWorkflow
-      ? {
-          id: workflow?._id,
-          name: workflow?.name,
-          critical: workflow?.critical,
-          identifier: workflow?.identifier,
-          data: workflow?.data,
-        }
-      : undefined,
-  });
+type BulkUpdatePreferenceParams = {
+  emitter: NovuEventEmitter;
+  apiService: InboxService;
+  cache: PreferencesCache;
+  scheduleCache: ScheduleCache;
+  useCache: boolean;
+  args: Array<UpdatePreferenceArgs>;
+};
+
+type UpdateScheduleParams = {
+  emitter: NovuEventEmitter;
+  apiService: InboxService;
+  cache: ScheduleCache;
+  useCache: boolean;
+  args: UpdateScheduleArgs;
 };
 
 export const updatePreference = async ({
   emitter,
   apiService,
+  cache,
+  scheduleCache,
+  useCache,
   args,
-}: {
-  emitter: NovuEventEmitter;
-  apiService: ApiService;
-  args: UpdatePreferencesArgs;
-}): Promise<Preference> => {
-  const { workflowId, enabled, channel } = args;
+}: UpdatePreferenceParams): Result<Preference> => {
+  const { channels } = args;
+  const workflowId = 'workflowId' in args ? args.workflowId : args.preference.workflow?.id;
+
   try {
-    emitter.emit('preferences.update.pending', { args });
+    emitter.emit('preference.update.pending', {
+      args,
+      data:
+        'preference' in args
+          ? new Preference(
+              {
+                ...args.preference,
+                channels: {
+                  ...args.preference.channels,
+                  ...channels,
+                },
+              },
+              {
+                emitterInstance: emitter,
+                inboxServiceInstance: apiService,
+                cache,
+                scheduleCache,
+                useCache,
+              }
+            )
+          : undefined,
+    });
 
     let response;
     if (workflowId) {
-      response = await apiService.updateSubscriberPreference(workflowId, channel, enabled);
+      response = await apiService.updateWorkflowPreferences({ workflowId, channels });
     } else {
-      response = await apiService.updateSubscriberGlobalPreference([{ channelType: channel, enabled }]);
+      optimisticUpdateWorkflowPreferences({ emitter, apiService, cache, scheduleCache, useCache, args });
+      response = await apiService.updateGlobalPreferences(channels);
     }
 
-    const preference = new Preference(mapPreference(response));
-    emitter.emit('preferences.update.success', { args, result: preference });
+    const preference = new Preference(response, {
+      emitterInstance: emitter,
+      inboxServiceInstance: apiService,
+      cache,
+      scheduleCache,
+      useCache,
+    });
+    emitter.emit('preference.update.resolved', { args, data: preference });
 
-    return preference;
+    return { data: preference };
   } catch (error) {
-    emitter.emit('preferences.update.error', { args, error });
-    throw error;
+    emitter.emit('preference.update.resolved', { args, error });
+
+    return { error: new NovuError('Failed to update preference', error) };
+  }
+};
+
+export const bulkUpdatePreference = async ({
+  emitter,
+  apiService,
+  cache,
+  scheduleCache,
+  useCache,
+  args,
+}: BulkUpdatePreferenceParams): Result<Preference[]> => {
+  const globalPreference = args.find((arg) => 'preference' in arg && arg.preference.level === PreferenceLevel.GLOBAL);
+  if (globalPreference) {
+    return { error: new NovuError('Global preference is not supported in bulk update', '') };
+  }
+
+  try {
+    const optimisticallyUpdatedPreferences = args
+      .map((arg) =>
+        'preference' in arg
+          ? new Preference(
+              {
+                ...arg.preference,
+                channels: {
+                  ...arg.preference.channels,
+                  ...arg.channels,
+                },
+              },
+              {
+                emitterInstance: emitter,
+                inboxServiceInstance: apiService,
+                cache,
+                scheduleCache,
+                useCache,
+              }
+            )
+          : undefined
+      )
+      .filter((el) => el !== undefined);
+
+    emitter.emit('preferences.bulk_update.pending', {
+      args,
+      data: optimisticallyUpdatedPreferences,
+    });
+
+    const preferencesToUpdate = args.map((arg) => ({
+      workflowId:
+        'workflowId' in arg
+          ? arg.workflowId
+          : (arg.preference.workflow?.id ?? arg.preference.workflow?.identifier ?? ''),
+      ...arg.channels,
+    }));
+    const response = await apiService.bulkUpdatePreferences(preferencesToUpdate);
+
+    const preferences = response.map(
+      (el) =>
+        new Preference(el, {
+          emitterInstance: emitter,
+          inboxServiceInstance: apiService,
+          cache,
+          scheduleCache,
+          useCache,
+        })
+    );
+    emitter.emit('preferences.bulk_update.resolved', { args, data: preferences });
+
+    return { data: preferences };
+  } catch (error) {
+    emitter.emit('preferences.bulk_update.resolved', { args, error });
+
+    return { error: new NovuError('Failed to bulk update preferences', error) };
+  }
+};
+
+const optimisticUpdateWorkflowPreferences = ({
+  emitter,
+  apiService,
+  cache,
+  scheduleCache,
+  useCache,
+  args,
+}: UpdatePreferenceParams): void => {
+  const allPreferences = useCache ? cache?.getAll({}) : undefined;
+
+  allPreferences?.forEach((el) => {
+    if (el.level === PreferenceLevel.TEMPLATE) {
+      const mergedPreference = {
+        ...el,
+        channels: Object.entries(el.channels).reduce((acc, [key, value]) => {
+          const channelType = key as ChannelType;
+          acc[channelType] = args.channels[channelType] ?? value;
+
+          return acc;
+        }, {} as ChannelPreference),
+      };
+      const updatedPreference =
+        'preference' in args
+          ? new Preference(mergedPreference, {
+              emitterInstance: emitter,
+              inboxServiceInstance: apiService,
+              cache,
+              scheduleCache,
+              useCache,
+            })
+          : undefined;
+
+      if (updatedPreference) {
+        emitter.emit('preference.update.pending', {
+          args: {
+            workflowId: el.workflow?.id ?? '',
+            channels: updatedPreference.channels,
+          },
+          data: updatedPreference,
+        });
+      }
+    }
+  });
+};
+
+export const updateSchedule = async ({
+  emitter,
+  apiService,
+  cache,
+  useCache,
+  args,
+}: UpdateScheduleParams): Result<Schedule> => {
+  try {
+    const { isEnabled, weeklySchedule } = args;
+    const optimisticallyUpdatedSchedule = new Schedule(
+      {
+        isEnabled,
+        weeklySchedule,
+      },
+      {
+        emitterInstance: emitter,
+        inboxServiceInstance: apiService,
+        cache,
+        useCache,
+      }
+    );
+    emitter.emit('preference.schedule.update.pending', { args, data: optimisticallyUpdatedSchedule });
+
+    // Call the API to update global preferences
+    const response = await apiService.updateGlobalPreferences({
+      schedule: {
+        isEnabled,
+        weeklySchedule,
+      },
+    });
+
+    // Create new Schedule instance with updated data
+    const updatedSchedule = new Schedule(
+      {
+        isEnabled: response.schedule?.isEnabled,
+        weeklySchedule: response.schedule?.weeklySchedule,
+      },
+      {
+        emitterInstance: emitter,
+        inboxServiceInstance: apiService,
+        cache,
+        useCache,
+      }
+    );
+
+    emitter.emit('preference.schedule.update.resolved', {
+      args,
+      data: updatedSchedule,
+    });
+
+    return { data: updatedSchedule };
+  } catch (error) {
+    emitter.emit('preference.schedule.update.resolved', { args, error });
+    return { error: new NovuError('Failed to update preference', error) };
   }
 };

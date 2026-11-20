@@ -1,14 +1,57 @@
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import {
+  AgentEmailInboxQuotaService,
+  analyticsService,
+  CacheServiceHealthIndicator,
+  ComputeJobWaitDurationService,
+  CreateExecutionDetails,
+  cacheService,
+  clickHouseService,
+  createNestLoggingModuleOptions,
+  DalServiceHealthIndicator,
+  DeliveryTrendCountsRepository,
+  ExecuteBridgeRequest,
+  ExecuteFrameworkRequest,
+  ExecuteStepResolverRequest,
+  featureFlagsService,
+  GetDecryptedSecretKey,
+  HttpClientService,
+  InMemoryLRUCacheService,
+  InvalidateCacheService,
+  LoggerModule,
+  MetricsModule,
+  NotificationPayloadService,
+  QueuesModule,
+  RequestLogRepository,
+  SafeOutboundHttpService,
+  StepRunRepository,
+  StepRunV2Repository,
+  StepRunV2Writer,
+  storageService,
+  TraceLogRepository,
+  TraceRollupRepository,
+  WorkflowRunCountRepository,
+  WorkflowRunRepository,
+} from '@novu/application-generic';
+import {
+  AgentIntegrationRepository,
+  AgentRepository,
   ChangeRepository,
+  CommunityMemberRepository,
+  CommunityOrganizationRepository,
+  CommunityUserRepository,
+  ControlValuesRepository,
   DalService,
+  DomainRepository,
+  DomainRouteRepository,
   EnvironmentRepository,
+  EnvironmentVariableRepository,
   ExecutionDetailsRepository,
   FeedRepository,
   IntegrationRepository,
   JobRepository,
   LayoutRepository,
-  LogRepository,
   MemberRepository,
   MessageRepository,
   MessageTemplateRepository,
@@ -16,7 +59,7 @@ import {
   NotificationRepository,
   NotificationTemplateRepository,
   OrganizationRepository,
-  SubscriberPreferenceRepository,
+  PreferencesRepository,
   SubscriberRepository,
   TenantRepository,
   TopicRepository,
@@ -24,30 +67,43 @@ import {
   UserRepository,
   WorkflowOverrideRepository,
 } from '@novu/dal';
-import {
-  analyticsService,
-  cacheService,
-  CacheServiceHealthIndicator,
-  ComputeJobWaitDurationService,
-  createNestLoggingModuleOptions,
-  DalServiceHealthIndicator,
-  distributedLockService,
-  featureFlagsService,
-  getFeatureFlag,
-  InvalidateCacheService,
-  LoggerModule,
-  QueuesModule,
-  storageService,
-  ExecutionLogRoute,
-  CreateExecutionDetails,
-} from '@novu/application-generic';
+import { isClerkEnabled, JobTopicNameEnum } from '@novu/shared';
+import packageJson from '../../../package.json';
+import { ApiKeyRevocationService } from '../auth/api-key-revocation/api-key-revocation.service';
+import { ActivityRetentionService } from './services/activity-retention.service';
+import { NovuTokens } from './services/novu-tokens.service';
+import { SubscriberSessionAuthStatsService } from './services/subscriber-session-auth-stats.service';
+import { getClientIp } from './utils/client-ip';
 
-import * as packageJson from '../../../package.json';
-import { JobTopicNameEnum } from '@novu/shared';
+function getDynamicAuthProviders() {
+  if (isClerkEnabled()) {
+    const eeAuthPackage = require('@novu/ee-auth');
+
+    return eeAuthPackage.injectEEAuthProviders();
+  } else {
+    const userRepositoryProvider = {
+      provide: 'USER_REPOSITORY',
+      useClass: CommunityUserRepository,
+    };
+
+    const memberRepositoryProvider = {
+      provide: 'MEMBER_REPOSITORY',
+      useClass: CommunityMemberRepository,
+    };
+
+    const organizationRepositoryProvider = {
+      provide: 'ORGANIZATION_REPOSITORY',
+      useClass: CommunityOrganizationRepository,
+    };
+
+    return [userRepositoryProvider, memberRepositoryProvider, organizationRepositoryProvider];
+  }
+}
 
 const DAL_MODELS = [
   UserRepository,
   OrganizationRepository,
+  CommunityOrganizationRepository,
   EnvironmentRepository,
   ExecutionDetailsRepository,
   NotificationTemplateRepository,
@@ -58,60 +114,119 @@ const DAL_MODELS = [
   NotificationGroupRepository,
   MemberRepository,
   LayoutRepository,
-  LogRepository,
   IntegrationRepository,
   ChangeRepository,
   JobRepository,
   FeedRepository,
-  SubscriberPreferenceRepository,
   TopicRepository,
   TopicSubscribersRepository,
   TenantRepository,
   WorkflowOverrideRepository,
+  ControlValuesRepository,
+  PreferencesRepository,
+  EnvironmentVariableRepository,
+  AgentRepository,
+  AgentIntegrationRepository,
+  DomainRepository,
+  DomainRouteRepository,
 ];
 
 const dalService = {
   provide: DalService,
   useFactory: async () => {
     const service = new DalService();
-    await service.connect(process.env.MONGO_URL);
+    await service.connect(process.env.MONGO_URL || '.');
 
     return service;
   },
 };
 
+const ANALYTICS_PROVIDERS = [
+  // Repositories
+  RequestLogRepository,
+  TraceLogRepository,
+  StepRunRepository,
+  StepRunV2Repository,
+  WorkflowRunRepository,
+  WorkflowRunCountRepository,
+  TraceRollupRepository,
+  DeliveryTrendCountsRepository,
+
+  // Services
+  clickHouseService,
+  StepRunV2Writer,
+];
+
 const PROVIDERS = [
+  ActivityRetentionService,
+  // Here rather than in one module: every module that provides `GetApiKeys` needs it.
+  ApiKeyRevocationService,
+  AgentEmailInboxQuotaService,
+  SubscriberSessionAuthStatsService,
   analyticsService,
   cacheService,
   CacheServiceHealthIndicator,
   ComputeJobWaitDurationService,
   dalService,
   DalServiceHealthIndicator,
-  distributedLockService,
   featureFlagsService,
+  InMemoryLRUCacheService,
   InvalidateCacheService,
+  NotificationPayloadService,
   storageService,
+  NovuTokens,
   ...DAL_MODELS,
-  ExecutionLogRoute,
   CreateExecutionDetails,
-  getFeatureFlag,
+  ExecuteBridgeRequest,
+  ExecuteFrameworkRequest,
+  ExecuteStepResolverRequest,
+  GetDecryptedSecretKey,
+  HttpClientService,
+  SafeOutboundHttpService,
+  ...ANALYTICS_PROVIDERS,
 ];
 
+const IMPORTS = [
+  MetricsModule,
+  QueuesModule.forRoot([
+    JobTopicNameEnum.WEB_SOCKETS,
+    JobTopicNameEnum.WORKFLOW,
+    JobTopicNameEnum.INBOUND_PARSE_MAIL,
+    JobTopicNameEnum.STANDARD,
+  ]),
+  LoggerModule.forRoot(
+    createNestLoggingModuleOptions({
+      serviceName: packageJson.name,
+      version: packageJson.version,
+      silent: !!process.env.CI,
+      // cfRay is the join key into Cloudflare's own logs for the same request.
+      customProps: (req) => ({ clientIp: getClientIp(req), cfRay: req.headers['cf-ray'] }),
+    })
+  ),
+];
+
+if (process.env.NODE_ENV === 'test') {
+  /**
+   * This is here only because of the tests. These providers are available at AppModule level,
+   * but since in tests we are often importing just the SharedModule and not the entire AppModule
+   * we need to make sure these providers are available.
+   *
+   * TODO: modify tests to either import all services they need explicitly, or remove repositories from SharedModule,
+   * and then import SharedModule + repositories explicitly.
+   */
+  PROVIDERS.push(...getDynamicAuthProviders());
+  IMPORTS.push(
+    JwtModule.register({
+      secret: `${process.env.JWT_SECRET}`,
+      signOptions: {
+        expiresIn: 360000,
+      },
+    })
+  );
+}
+
 @Module({
-  imports: [
-    QueuesModule.forRoot([
-      JobTopicNameEnum.EXECUTION_LOG,
-      JobTopicNameEnum.WEB_SOCKETS,
-      JobTopicNameEnum.WORKFLOW,
-      JobTopicNameEnum.INBOUND_PARSE_MAIL,
-    ]),
-    LoggerModule.forRoot(
-      createNestLoggingModuleOptions({
-        serviceName: packageJson.name,
-        version: packageJson.version,
-      })
-    ),
-  ],
+  imports: [...IMPORTS],
   providers: [...PROVIDERS],
   exports: [...PROVIDERS, LoggerModule, QueuesModule],
 })

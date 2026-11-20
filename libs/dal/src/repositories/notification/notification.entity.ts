@@ -1,9 +1,30 @@
-import { ISubscribersDefine, StepTypeEnum } from '@novu/shared';
+import {
+  DeliveryLifecycleEventType,
+  ISubscribersDefine,
+  SeverityLevelEnum,
+  StatelessControls,
+  StepTypeEnum,
+  TriggerOverrides,
+} from '@novu/shared';
 
+import type { ChangePropsValueType } from '../../types/helpers';
+import type { EnvironmentId } from '../environment';
 import { NotificationTemplateEntity } from '../notification-template';
 import type { OrganizationId } from '../organization';
-import type { EnvironmentId } from '../environment';
-import type { ChangePropsValueType } from '../../types/helpers';
+
+export interface TopicPreferenceEvaluation {
+  condition?: Record<string, unknown>;
+  result: boolean;
+  subscriptionIdentifier: string;
+}
+
+export type NotificationTopic = {
+  _topicId: string;
+  topicKey: string;
+  preferenceEvaluation?: TopicPreferenceEvaluation;
+};
+
+export type TerminalWorkflowStatusEvent = 'workflow_run_status_completed' | 'workflow_run_status_error';
 
 export class NotificationEntity {
   _id: string;
@@ -15,6 +36,8 @@ export class NotificationEntity {
   _organizationId: OrganizationId;
 
   _subscriberId: string;
+
+  topics: NotificationTopic[];
 
   transactionId: string;
 
@@ -28,17 +51,27 @@ export class NotificationEntity {
    * This is a field that is used to define the subscriber that will receive the notification.
    * This field simplifies metric retrieval by associating external subscriber data, such as subscriberId.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: stored as Schema.Types.Mixed, mirrors the trigger `to` as sent
   to?: ISubscribersDefine | any;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: stored as Schema.Types.Mixed, the trigger payload is user-defined JSON
   payload?: any;
+
+  /*
+   * Trigger overrides of the workflow run. Jobs written under overrides-dedup
+   * do not carry their own copy and resolve them from here.
+   */
+  overrides?: TriggerOverrides;
 
   createdAt?: string;
   updatedAt?: string;
-  expireAt?: string;
-
-  bridge?: any;
+  tags?: string[];
+  controls?: StatelessControls;
+  severity?: SeverityLevelEnum;
+  critical?: boolean;
+  contextKeys?: string[];
+  lastEmittedDeliveryEvent?: DeliveryLifecycleEventType;
+  lastEmittedWorkflowStatusEvent?: TerminalWorkflowStatusEvent;
 }
 
 export type NotificationDBModel = ChangePropsValueType<
