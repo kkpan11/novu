@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { IntegrationEntity, IntegrationRepository } from '@novu/dal';
+import { ICredentialsEntity, IntegrationEntity, IntegrationRepository } from '@novu/dal';
 
 import { decryptCredentials } from '../../encryption';
 import { GetDecryptedIntegrationsCommand } from './get-decrypted-integrations.command';
@@ -8,12 +8,14 @@ import { GetDecryptedIntegrationsCommand } from './get-decrypted-integrations.co
 export class GetDecryptedIntegrations {
   constructor(private integrationRepository: IntegrationRepository) {}
 
-  async execute(
-    command: GetDecryptedIntegrationsCommand
-  ): Promise<IntegrationEntity[]> {
+  async execute(command: GetDecryptedIntegrationsCommand): Promise<IntegrationEntity[]> {
     const query: Partial<IntegrationEntity> & { _organizationId: string } = {
       _organizationId: command.organizationId,
     };
+
+    if (command.scopeToEnvironment) {
+      query._environmentId = command.environmentId;
+    }
 
     if (command.active) {
       query.active = command.active;
@@ -33,14 +35,45 @@ export class GetDecryptedIntegrations {
 
     return foundIntegrations
       .filter((integration) => integration)
-      .map((integration: IntegrationEntity) =>
-        GetDecryptedIntegrations.getDecryptedCredentials(integration)
-      );
+      .map((integration: IntegrationEntity) => {
+        if (command.returnCredentials === false) {
+          /*
+           * Return an empty `credentials` object instead of omitting the field.
+           * Older `@novu/api` SDK versions (e.g. 3.15.0) declare `credentials` as a
+           * required object in their zod schema, so omitting it causes response
+           * validation to fail. An empty object preserves the same effective
+           * "no credentials" semantics while keeping previously released
+           * SDK clients working.
+           */
+          return {
+            ...GetDecryptedIntegrations.withoutConfigurationSecrets(integration),
+            credentials: {} as ICredentialsEntity,
+          };
+        }
+
+        return GetDecryptedIntegrations.getDecryptedCredentials(integration);
+      });
   }
 
   public static getDecryptedCredentials(integration: IntegrationEntity) {
     integration.credentials = decryptCredentials(integration.credentials);
 
     return integration;
+  }
+
+  /**
+   * The integration without the secrets stored in plain text on `configurations` (the inbound webhook signing key),
+   * for callers that may not see credentials.
+   */
+  public static withoutConfigurationSecrets<T extends { configurations?: object }>(integration: T): T {
+    if (!integration.configurations || !('inboundWebhookSigningKey' in integration.configurations)) {
+      return integration;
+    }
+
+    const { inboundWebhookSigningKey: _signingKey, ...configurations } = integration.configurations as {
+      inboundWebhookSigningKey?: string;
+    };
+
+    return { ...integration, configurations };
   }
 }

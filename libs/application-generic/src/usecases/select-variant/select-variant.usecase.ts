@@ -1,17 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { MessageTemplateRepository } from '@novu/dal';
-import { ICondition, IMessageTemplate } from '@novu/shared';
-
+import { MessageTemplateEntity, MessageTemplateRepository } from '@novu/dal';
+import { ICondition } from '@novu/shared';
+import { IFilterVariables, PlatformException } from '../../utils';
+import { ConditionsFilter, ConditionsFilterCommand } from '../conditions-filter';
+import { NormalizeVariables, NormalizeVariablesCommand } from '../normalize-variables';
 import { SelectVariantCommand } from './select-variant.command';
-import { ConditionsFilter } from '../conditions-filter';
-import { ConditionsFilterCommand } from '../conditions-filter';
-import { PlatformException } from '../../utils/exceptions';
-import { IFilterVariables } from '../../utils/filter-processing-details';
-import {
-  NormalizeVariables,
-  NormalizeVariablesCommand,
-} from '../normalize-variables';
 
 const LOG_CONTEXT = 'SelectVariant';
 
@@ -24,7 +18,7 @@ export class SelectVariant {
   ) {}
 
   async execute(command: SelectVariantCommand): Promise<{
-    messageTemplate: IMessageTemplate;
+    messageTemplate: MessageTemplateEntity;
     conditions?: ICondition[];
   }> {
     if (!command.step.variants?.length) {
@@ -96,11 +90,6 @@ export class SelectVariant {
   }
 
   private isFilterDataExist(filterData: IFilterVariables) {
-    return (
-      !!filterData.tenant ||
-      !!filterData.payload ||
-      !!filterData.subscriber ||
-      !!filterData.webhook
-    );
+    return !!filterData.tenant || !!filterData.payload || !!filterData.subscriber || !!filterData.webhook;
   }
 }

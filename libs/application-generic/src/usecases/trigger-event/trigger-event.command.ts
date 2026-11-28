@@ -1,22 +1,17 @@
-import {
-  IsDefined,
-  IsString,
-  IsOptional,
-  ValidateNested,
-  ValidateIf,
-  IsEnum,
-} from 'class-validator';
-
+import { DiscoverWorkflowOutput } from '@novu/framework/internal';
 import {
   AddressingTypeEnum,
-  TriggerRecipientsPayload,
+  ContextPayload,
+  StatelessControls,
+  TriggerOverrides,
   TriggerRecipientSubscriber,
+  TriggerRecipientsPayload,
   TriggerRequestCategoryEnum,
   TriggerTenantContext,
 } from '@novu/shared';
-import { DiscoverWorkflowOutput } from '@novu/framework';
-
+import { IsDefined, IsEnum, IsOptional, IsString, ValidateIf, ValidateNested } from 'class-validator';
 import { EnvironmentWithUserCommand } from '../../commands';
+import { IsValidContextPayload } from '../../decorators';
 
 export class TriggerEventBaseCommand extends EnvironmentWithUserCommand {
   @IsDefined()
@@ -24,14 +19,24 @@ export class TriggerEventBaseCommand extends EnvironmentWithUserCommand {
   identifier: string;
 
   @IsDefined()
-  payload: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  payload: any;
 
   @IsDefined()
-  overrides: Record<string, Record<string, unknown>>;
+  overrides: TriggerOverrides;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  _agentId?: string | null;
 
   @IsString()
   @IsDefined()
   transactionId: string;
+
+  // TODO: remove optional flag after all the workers are migrated to use requestId NV-6475
+  @IsString()
+  @IsOptional()
+  requestId?: string;
 
   @IsOptional()
   @ValidateIf((_, value) => typeof value !== 'string')
@@ -53,6 +58,12 @@ export class TriggerEventBaseCommand extends EnvironmentWithUserCommand {
 
   @IsOptional()
   bridgeWorkflow?: DiscoverWorkflowOutput;
+
+  controls?: StatelessControls;
+
+  @IsOptional()
+  @IsValidContextPayload({ maxCount: 5 })
+  context?: ContextPayload;
 }
 
 export class TriggerEventMulticastCommand extends TriggerEventBaseCommand {
@@ -68,6 +79,4 @@ export class TriggerEventBroadcastCommand extends TriggerEventBaseCommand {
   addressingType: AddressingTypeEnum.BROADCAST;
 }
 
-export type TriggerEventCommand =
-  | TriggerEventMulticastCommand
-  | TriggerEventBroadcastCommand;
+export type TriggerEventCommand = TriggerEventMulticastCommand | TriggerEventBroadcastCommand;

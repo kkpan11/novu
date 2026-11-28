@@ -1,14 +1,18 @@
-import { IsDefined, IsString, IsOptional } from 'class-validator';
-// TODO: We shouldn't be importing from DAL here. Needs big refactor throughout monorepo.
 import { NotificationTemplateEntity, SubscriberEntity } from '@novu/dal';
 import {
   ChannelTypeEnum,
   ISubscribersDefine,
   ITenantDefine,
   ProvidersIdEnum,
+  SeverityLevelEnum,
+  StatelessControls,
+  TriggerOverrides,
+  WorkflowPreferences,
 } from '@novu/shared';
+import { IsArray, IsBoolean, IsDefined, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 import { EnvironmentWithUserCommand } from '../../commands';
+import { SubscriberTopicPreference } from '../../dtos';
 
 export class CreateNotificationJobsCommand extends EnvironmentWithUserCommand {
   @IsDefined()
@@ -16,10 +20,16 @@ export class CreateNotificationJobsCommand extends EnvironmentWithUserCommand {
   identifier: string;
 
   @IsDefined()
-  overrides: Record<string, Record<string, unknown>>;
+  overrides: TriggerOverrides;
+
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  _agentId?: string | null;
 
   @IsDefined()
-  payload: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: the trigger payload is arbitrary customer JSON
+  payload: any;
 
   @IsDefined()
   subscriber: SubscriberEntity;
@@ -33,6 +43,9 @@ export class CreateNotificationJobsCommand extends EnvironmentWithUserCommand {
   @IsDefined()
   to: ISubscribersDefine;
 
+  @IsOptional()
+  topics?: SubscriberTopicPreference[];
+
   @IsString()
   @IsDefined()
   transactionId: string;
@@ -43,5 +56,24 @@ export class CreateNotificationJobsCommand extends EnvironmentWithUserCommand {
   @IsOptional()
   tenant?: ITenantDefine;
 
-  bridge?: any;
+  @IsArray()
+  @IsString({ each: true })
+  contextKeys: string[];
+
+  bridgeUrl?: string;
+
+  controls?: StatelessControls;
+
+  preferences?: WorkflowPreferences;
+
+  @IsDefined()
+  severity: SeverityLevelEnum;
+
+  @IsDefined()
+  critical: boolean;
+
+  /** Mirrors `IProcessSubscriberDataDto.incrementUsageInWorker`; transitional (NV-8853). */
+  @IsOptional()
+  @IsBoolean()
+  incrementUsageInWorker?: boolean;
 }

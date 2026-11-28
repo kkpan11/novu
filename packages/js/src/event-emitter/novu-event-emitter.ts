@@ -1,34 +1,32 @@
 import mitt, { Emitter } from 'mitt';
+import { EventHandler, Events } from './types';
+import type { WebChatMessagesUpdated } from './web-chat-events';
 
-import { EventHandler, Events, EventNames } from './types';
-
-type SingletonOptions = { recreate: true };
+type InternalEvents = Events & {
+  'web_chat.messages.updated': { data: WebChatMessagesUpdated };
+};
+type InternalEventNames = keyof InternalEvents;
 
 export class NovuEventEmitter {
-  static #instance: NovuEventEmitter;
-  #mittEmitter: Emitter<Events>;
+  #mittEmitter: Emitter<InternalEvents>;
 
-  static getInstance(options?: SingletonOptions): NovuEventEmitter {
-    if (options?.recreate) {
-      NovuEventEmitter.#instance = new NovuEventEmitter();
-    }
-
-    return NovuEventEmitter.#instance;
-  }
-
-  private constructor() {
+  constructor() {
     this.#mittEmitter = mitt();
   }
 
-  on<Key extends EventNames>(eventName: Key, listener: EventHandler<Events[Key]>): void {
+  on<Key extends InternalEventNames>(eventName: Key, listener: EventHandler<InternalEvents[Key]>): () => void {
     this.#mittEmitter.on(eventName, listener);
+
+    return () => {
+      this.off(eventName, listener);
+    };
   }
 
-  off<Key extends EventNames>(eventName: Key, listener: EventHandler<Events[Key]>): void {
+  off<Key extends InternalEventNames>(eventName: Key, listener: EventHandler<InternalEvents[Key]>): void {
     this.#mittEmitter.off(eventName, listener);
   }
 
-  emit<Key extends EventNames>(type: Key, event?: Events[Key]): void {
-    this.#mittEmitter.emit(type, event as Events[Key]);
+  emit<Key extends InternalEventNames>(type: Key, event?: InternalEvents[Key]): void {
+    this.#mittEmitter.emit(type, event as InternalEvents[Key]);
   }
 }

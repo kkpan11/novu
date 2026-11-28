@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { SubscriberRepository } from '@novu/dal';
 import { ISubscriberJwt } from '@novu/shared';
-import { SubscriberRepository, MemberRepository } from '@novu/dal';
 
 interface IUpdateSubscriberPayload {
   isOnline: boolean;
@@ -21,7 +21,7 @@ export class SubscriberOnlineService {
     const lastOnlineAt = new Date().toISOString();
     let isOnline = false;
 
-    if (activeConnections > 1) {
+    if (activeConnections > 0) {
       isOnline = true;
     }
 

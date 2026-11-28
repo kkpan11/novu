@@ -1,31 +1,151 @@
+import type { AgentEventEnvelope } from '@novu/agent-event-protocol';
 import io, { Socket as SocketIO } from 'socket.io-client';
+import type { InboxService, SessionRefresher } from '../api';
 import { BaseModule } from '../base-module';
-
 import {
   NotificationReceivedEvent,
-  NotificationUnseenEvent,
   NotificationUnreadEvent,
+  NotificationUnseenEvent,
   NovuEventEmitter,
   SocketEventNames,
+  WebChatAgentEvent,
 } from '../event-emitter';
-import { Notification } from '../feeds';
-import { Session, TODO, WebSocketEvent } from '../types';
+import { Notification } from '../notifications';
+import {
+  ActionTypeEnum,
+  InboxNotification,
+  NotificationActionStatus,
+  Result,
+  Session,
+  Subscriber,
+  TODO,
+  WebSocketEvent,
+} from '../types';
+import { NovuError } from '../utils/errors';
+import { sanitizeInAppRedirect } from '../utils/in-app-redirect-url';
+import { isJwtExpired } from '../utils/jwt';
+import type { BaseSocketInterface } from './base-socket';
 
 const PRODUCTION_SOCKET_URL = 'https://ws.novu.co';
 const NOTIFICATION_RECEIVED: NotificationReceivedEvent = 'notifications.notification_received';
 const UNSEEN_COUNT_CHANGED: NotificationUnseenEvent = 'notifications.unseen_count_changed';
 const UNREAD_COUNT_CHANGED: NotificationUnreadEvent = 'notifications.unread_count_changed';
+const WEB_CHAT_AGENT_EVENT: WebChatAgentEvent = 'web_chat.agent_event';
 
-export class Socket extends BaseModule {
+const mapToNotification = ({
+  _id,
+  transactionId,
+  content,
+  read,
+  seen,
+  archived,
+  snoozedUntil,
+  deliveredAt,
+  createdAt,
+  lastReadDate,
+  firstSeenDate,
+  archivedAt,
+  channel,
+  subscriber,
+  subject,
+  avatar,
+  cta,
+  tags,
+  data,
+  workflow,
+  severity,
+}: TODO): InboxNotification => {
+  const to: Subscriber = {
+    id: subscriber?._id,
+    subscriberId: subscriber?.subscriberId,
+    firstName: subscriber?.firstName,
+    lastName: subscriber?.lastName,
+    avatar: subscriber?.avatar,
+    locale: subscriber?.locale,
+    data: subscriber?.data,
+    timezone: subscriber?.timezone,
+    email: subscriber?.email,
+    phone: subscriber?.phone,
+  };
+  const primaryCta = cta.action?.buttons?.find((button: { type?: string }) => button.type === ActionTypeEnum.PRIMARY);
+  const secondaryCta = cta.action?.buttons?.find(
+    (button: { type?: string }) => button.type === ActionTypeEnum.SECONDARY
+  );
+  const actionType = cta.action?.result?.type;
+  const actionStatus = cta.action?.status;
+
+  return {
+    id: _id,
+    transactionId,
+    subject,
+    body: content as string,
+    to,
+    isRead: read,
+    isSeen: seen,
+    isArchived: archived,
+    isSnoozed: !!snoozedUntil,
+    ...(deliveredAt && {
+      deliveredAt,
+    }),
+    ...(snoozedUntil && {
+      snoozedUntil,
+    }),
+    createdAt,
+    readAt: lastReadDate,
+    firstSeenAt: firstSeenDate,
+    archivedAt,
+    avatar,
+    primaryAction: primaryCta && {
+      label: primaryCta.content,
+      isCompleted: actionType === ActionTypeEnum.PRIMARY && actionStatus === NotificationActionStatus.DONE,
+      redirect: sanitizeInAppRedirect(primaryCta.url, primaryCta.target),
+    },
+    secondaryAction: secondaryCta && {
+      label: secondaryCta.content,
+      isCompleted: actionType === ActionTypeEnum.SECONDARY && actionStatus === NotificationActionStatus.DONE,
+      redirect: sanitizeInAppRedirect(secondaryCta.url, secondaryCta.target),
+    },
+    channelType: channel,
+    tags,
+    redirect: sanitizeInAppRedirect(cta.data?.url, cta.data?.target),
+    data,
+    workflow,
+    severity,
+  };
+};
+
+export class Socket extends BaseModule implements BaseSocketInterface {
   #token: string;
   #emitter: NovuEventEmitter;
   #socketIo: SocketIO | undefined;
   #socketUrl: string;
+  #socketOptions?: Record<string, unknown>;
+  #refreshSession?: SessionRefresher;
+  /** The token sent with the latest connection attempt. */
+  #handshakeToken: string | undefined;
+  #tokenRetryTimeout: ReturnType<typeof setTimeout> | undefined;
 
-  constructor({ socketUrl }: { socketUrl?: string }) {
-    super();
-    this.#emitter = NovuEventEmitter.getInstance();
+  constructor({
+    socketUrl,
+    socketOptions,
+    inboxServiceInstance,
+    eventEmitterInstance,
+    refreshSession,
+  }: {
+    socketUrl?: string;
+    socketOptions?: Record<string, unknown>;
+    inboxServiceInstance: InboxService;
+    eventEmitterInstance: NovuEventEmitter;
+    refreshSession?: SessionRefresher;
+  }) {
+    super({
+      eventEmitterInstance,
+      inboxServiceInstance,
+    });
+    this.#emitter = eventEmitterInstance;
     this.#socketUrl = socketUrl ?? PRODUCTION_SOCKET_URL;
+    this.#socketOptions = socketOptions;
+    this.#refreshSession = refreshSession;
   }
 
   protected onSessionSuccess({ token }: Session): void {
@@ -34,7 +154,7 @@ export class Socket extends BaseModule {
 
   #notificationReceived = ({ message }: { message: TODO }) => {
     this.#emitter.emit(NOTIFICATION_RECEIVED, {
-      result: new Notification(message),
+      result: new Notification(mapToNotification(message), this.#emitter, this._inboxService),
     });
   };
 
@@ -44,14 +164,57 @@ export class Socket extends BaseModule {
     });
   };
 
-  #unreadCountChanged = ({ unreadCount }: { unreadCount: number }) => {
+  #unreadCountChanged = ({ counts }: { counts: { total: number; severity: Record<string, number> } }) => {
     this.#emitter.emit(UNREAD_COUNT_CHANGED, {
-      result: unreadCount,
+      result: counts,
     });
   };
 
+  #agentEvent = (envelope: AgentEventEnvelope) => {
+    this.#emitter.emit(WEB_CHAT_AGENT_EVENT, {
+      result: envelope,
+    });
+  };
+
+  /** Sends the current token with the next connection attempt. */
+  #useCurrentToken(socket: SocketIO): void {
+    socket.io.opts.query = { ...socket.io.opts.query, token: `${this.#token}` };
+    this.#handshakeToken = this.#token;
+  }
+
+  /**
+   * The server checks the token only when the socket connects. When it rejects an expired token it disconnects
+   * the socket, and socket.io does not reconnect after a server disconnect, so get a new token and connect again.
+   */
+  async #reconnectWithFreshToken(socket: SocketIO): Promise<void> {
+    this.#tokenRetryTimeout = undefined;
+    const refreshSession = this.#refreshSession;
+    if (!refreshSession || socket !== this.#socketIo || !isJwtExpired(this.#handshakeToken)) {
+      return;
+    }
+
+    const hasFreshToken = !isJwtExpired(this.#token) || (await refreshSession().catch(() => false));
+
+    if (socket !== this.#socketIo) {
+      return;
+    }
+
+    if (!hasFreshToken) {
+      // socket.io stopped retrying after the server disconnect, so keep trying here until a token comes back.
+      this.#tokenRetryTimeout = setTimeout(
+        () => void this.#reconnectWithFreshToken(socket),
+        socket.io.reconnectionDelayMax()
+      );
+
+      return;
+    }
+
+    this.#useCurrentToken(socket);
+    socket.connect();
+  }
+
   async #initializeSocket(): Promise<void> {
-    if (!!this.#socketIo) {
+    if (this.#socketIo) {
       return;
     }
 
@@ -64,36 +227,92 @@ export class Socket extends BaseModule {
       query: {
         token: `${this.#token}`,
       },
+      ...(this.#socketOptions ?? {}),
+    });
+
+    const socket = this.#socketIo;
+    this.#handshakeToken = this.#token;
+
+    socket.io.on('reconnect_attempt', () => {
+      this.#useCurrentToken(socket);
+
+      if (this.#refreshSession && isJwtExpired(this.#token)) {
+        // This attempt still carries the expired token; the next one picks up the new token.
+        this.#refreshSession().catch(() => false);
+      }
     });
 
     this.#socketIo.on('connect', () => {
-      this.#emitter.emit('socket.connect.success', { args, result: undefined });
+      this.#emitter.emit('socket.connect.resolved', { args });
     });
 
     this.#socketIo.on('connect_error', (error) => {
-      this.#emitter.emit('socket.connect.error', { args, error });
+      this.#emitter.emit('socket.connect.resolved', { args, error });
+    });
+
+    this.#socketIo.on('disconnect', (reason) => {
+      if (this.#socketIo !== undefined && socket !== this.#socketIo) {
+        return;
+      }
+
+      this.#emitter.emit('socket.disconnect.resolved', { args });
+
+      if (reason === 'io server disconnect') {
+        void this.#reconnectWithFreshToken(socket);
+      }
     });
 
     this.#socketIo?.on(WebSocketEvent.RECEIVED, this.#notificationReceived);
     this.#socketIo?.on(WebSocketEvent.UNSEEN, this.#unseenCountChanged);
     this.#socketIo?.on(WebSocketEvent.UNREAD, this.#unreadCountChanged);
+    this.#socketIo?.on(WebSocketEvent.AGENT_EVENT, this.#agentEvent);
+  }
+
+  async #handleConnectSocket(): Result<void> {
+    try {
+      await this.#initializeSocket();
+
+      return {};
+    } catch (error) {
+      return { error: new NovuError('Failed to initialize the socket', error) };
+    }
+  }
+
+  async #handleDisconnectSocket(): Result<void> {
+    try {
+      clearTimeout(this.#tokenRetryTimeout);
+      this.#tokenRetryTimeout = undefined;
+      this.#socketIo?.disconnect();
+      this.#socketIo = undefined;
+
+      return {};
+    } catch (error) {
+      return { error: new NovuError('Failed to disconnect from the socket', error) };
+    }
   }
 
   isSocketEvent(eventName: string): eventName is SocketEventNames {
     return (
-      eventName === NOTIFICATION_RECEIVED || eventName === UNSEEN_COUNT_CHANGED || eventName === UNREAD_COUNT_CHANGED
+      eventName === NOTIFICATION_RECEIVED ||
+      eventName === UNSEEN_COUNT_CHANGED ||
+      eventName === UNREAD_COUNT_CHANGED ||
+      eventName === WEB_CHAT_AGENT_EVENT
     );
   }
 
-  initialize(): void {
+  async connect(): Result<void> {
     if (this.#token) {
-      this.#initializeSocket().then((error) => console.error(error));
-
-      return;
+      return this.#handleConnectSocket();
     }
 
-    this.callWithSession(async () => {
-      this.#initializeSocket().then((error) => console.error(error));
-    });
+    return this.callWithSession(this.#handleConnectSocket.bind(this));
+  }
+
+  async disconnect(): Result<void> {
+    if (this.#socketIo) {
+      return this.#handleDisconnectSocket();
+    }
+
+    return this.callWithSession(this.#handleDisconnectSocket.bind(this));
   }
 }

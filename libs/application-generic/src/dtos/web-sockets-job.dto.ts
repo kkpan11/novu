@@ -1,17 +1,19 @@
 import { WebSocketEventEnum } from '@novu/shared';
-
-import {
-  IBulkJobParams,
-  IJobParams,
-} from '../services/queues/queue-base.service';
 import { JobsOptions } from '../services/bull-mq';
+import { IBulkJobParams, IJobParams } from '../services/queues/queue-base.service';
 
 export interface IWebSocketDataDto {
   event: WebSocketEventEnum;
   userId: string;
   _environmentId: string;
   _organizationId?: string;
-  payload?: { messageId: string };
+  subscriberId?: string;
+  /**
+   * Inbox jobs use `{ messageId }` (and related count fields).
+   * `AGENT_EVENT` jobs carry an `AgentEventEnvelope`.
+   */
+  payload?: Record<string, unknown>;
+  contextKeys: string[];
 }
 
 export interface IWebSocketJob extends IJobParams {

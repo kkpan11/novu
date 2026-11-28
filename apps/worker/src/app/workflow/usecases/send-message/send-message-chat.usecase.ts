@@ -1,49 +1,176 @@
 import { Injectable, Logger } from '@nestjs/common';
-import * as Sentry from '@sentry/node';
 import { ModuleRef } from '@nestjs/core';
-
 import {
-  NotificationStepEntity,
-  SubscriberRepository,
-  MessageRepository,
-  MessageEntity,
-  IntegrationEntity,
-  IChannelSettings,
-} from '@novu/dal';
-import {
-  ChannelTypeEnum,
-  LogCodeEnum,
-  ChatProviderIdEnum,
-  ExecutionDetailsSourceEnum,
-  ExecutionDetailsStatusEnum,
-  ProvidersIdEnum,
-  ITenantDefine,
-} from '@novu/shared';
-import {
-  InstrumentUsecase,
-  DetailEnum,
+  ChatFactory,
   CompileTemplate,
   CompileTemplateCommand,
-  ChatFactory,
-  SelectIntegration,
+  CreateExecutionDetails,
+  CreateExecutionDetailsCommand,
+  DetailEnum,
+  FeatureFlagsService,
   GetNovuProviderCredentials,
-  SelectVariant,
-  ExecutionLogRoute,
-  ExecutionLogRouteCommand,
-  IProviderOverride,
-  IProvidersOverride,
-  ExecuteOutput,
-  IBridgeChannelResponse,
-  IBlock,
+  type IChatHandler,
+  InstrumentUsecase,
+  type IntegrationSelectionResult,
+  MsTeamsTokenService,
+  messageWebhookMapper,
+  SelectIntegration,
   SelectIntegrationCommand,
+  SelectVariant,
+  SendWebhookMessage,
+  validateEndpointForType,
 } from '@novu/application-generic';
-
-import { CreateLog } from '../../../shared/logs';
-import { SendMessageCommand } from './send-message.command';
-import { SendMessageBase } from './send-message.base';
+import {
+  AgentIntegrationRepository,
+  AgentRepository,
+  EnvironmentEntity,
+  IntegrationEntity,
+  MessageEntity,
+  MessageRepository,
+  NotificationStepEntity,
+  OrganizationEntity,
+  SubscriberRepository,
+  UserEntity,
+} from '@novu/dal';
+import { ChatOutput } from '@novu/framework/internal';
+import {
+  ChannelTypeEnum,
+  ChatProviderIdEnum,
+  DeliveryLifecycleDetail,
+  DeliveryLifecycleStatusEnum,
+  ENDPOINT_TYPES,
+  ExecutionDetailsSourceEnum,
+  ExecutionDetailsStatusEnum,
+  FeatureFlagsKeysEnum,
+  getAtPath,
+  getProviderOverrideConfig,
+  IChannelSettings,
+  ProvidersIdEnum,
+  WebhookEventEnum,
+  WebhookObjectTypeEnum,
+} from '@novu/shared';
+import {
+  CardElement,
+  ChannelData,
+  IChatFile,
+  IChatFileDeliveryResult,
+  IChatRenderValidation,
+  ISendMessageSuccessResponse,
+} from '@novu/stateless';
+import { addBreadcrumb } from '@sentry/node';
 import { PlatformException } from '../../../shared/utils';
+import { getChatAttachments } from './attachment-channels';
+import { ResolveChannelEndpointsCommand } from './channel-endpoint-resolution/resolve-channel-endpoints.command';
+import {
+  IntegrationEndpoints,
+  ResolveChannelEndpoints,
+} from './channel-endpoint-resolution/resolve-channel-endpoints.usecase';
+import {
+  combineProviderOverrides,
+  omitBlankPhoneDestination,
+  resolvePhoneDestination,
+  SendMessageBase,
+} from './send-message.base';
+import { SendMessageChannelCommand } from './send-message-channel.command';
+import { SendMessageResult, SendMessageStatus } from './send-message-type.usecase';
 
 const LOG_CONTEXT = 'SendMessageChat';
+
+/** Azure AD token errors carry the readable text (an `AADSTS…` code) in `error_description`. */
+function describeAadError(error: unknown): string {
+  const data = (error as { response?: { data?: { error_description?: unknown } } } | undefined)?.response?.data;
+  const description = typeof data?.error_description === 'string' ? data.error_description : undefined;
+  const message = description ?? (error instanceof Error ? error.message : String(error));
+
+  // The first line is the explanation; the rest are trace and correlation ids.
+  return message.split(/\r?\n/)[0].slice(0, 300);
+}
+
+/**
+ * True when overrides carry payload that replaces the compiled card (primary content key,
+ * seeded array content, or provider-native rich fields). Routing/metadata-only keys such as
+ * `webhookUrl` or endpoint identifiers must not suppress card resolution.
+ */
+export function hasChatContentOverride(providerId: string, overrides: Record<string, unknown>): boolean {
+  if (Object.keys(overrides).length === 0) {
+    return false;
+  }
+
+  const config = getProviderOverrideConfig(providerId);
+
+  if (config?.seedWhenAbsent && Array.isArray(overrides[config.seedWhenAbsent.key])) {
+    return true;
+  }
+
+  const primaryKey = config?.primaryContentKey;
+  if (primaryKey != null) {
+    const primaryValue = getAtPath(overrides, primaryKey);
+    if (primaryValue !== undefined && primaryValue !== null) {
+      return true;
+    }
+  }
+
+  // Native rich payloads that replace the compiled card (Slack Block Kit, Teams Adaptive Cards).
+  if (Array.isArray(overrides.blocks) || overrides.attachments !== undefined) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Chat providers that deliver to the subscriber's phone number rather than a webhook/channel.
+ * These are auto-resolved from `subscriber.phone` and select their integration by providerId.
+ */
+const PHONE_BASED_CHAT_PROVIDERS: ChatProviderIdEnum[] = [
+  ChatProviderIdEnum.WhatsAppBusiness,
+  ChatProviderIdEnum.Sendblue,
+  ChatProviderIdEnum.PhotonImessage,
+];
+
+type ActivePhoneIntegration = {
+  providerId: ChatProviderIdEnum;
+  integrationIdentifier?: string;
+};
+
+type UnifiedChannel = {
+  type: 'new' | 'legacy';
+  data: IntegrationEndpoints | IChannelSettings;
+};
+
+type LegacyChannelWithBoundIntegration = IChannelSettings & {
+  integrationIdentifier?: string;
+};
+
+type MessageContext = {
+  command: SendMessageChannelCommand;
+  step: NotificationStepEntity;
+  content: string;
+  /**
+   * Rich Chat: the compiled card (from a Maily block body or a code-first `card` output),
+   * resolved once from the bridge output. Its absence keeps the legacy plain-text `content` path.
+   */
+  card?: CardElement;
+  assignedAgentId: string | null;
+};
+
+const AGENT_SUPPORTED_ENDPOINT_TYPES = new Set<string>([
+  ENDPOINT_TYPES.SLACK_USER,
+  ENDPOINT_TYPES.SLACK_CHANNEL,
+  ENDPOINT_TYPES.MS_TEAMS_USER,
+]);
+
+function filterAgentSupportedEndpoints(endpoints: ChannelData[]): ChannelData[] {
+  return endpoints.filter((endpoint) => {
+    if (!AGENT_SUPPORTED_ENDPOINT_TYPES.has(endpoint.type)) {
+      return false;
+    }
+
+    const token = 'token' in endpoint ? endpoint.token : undefined;
+
+    return typeof token === 'string' && token.length > 0;
+  });
+}
 
 @Injectable()
 export class SendMessageChat extends SendMessageBase {
@@ -52,18 +179,22 @@ export class SendMessageChat extends SendMessageBase {
   constructor(
     protected subscriberRepository: SubscriberRepository,
     protected messageRepository: MessageRepository,
-    protected createLogUsecase: CreateLog,
     private compileTemplate: CompileTemplate,
     protected selectIntegration: SelectIntegration,
     protected getNovuProviderCredentials: GetNovuProviderCredentials,
     protected selectVariant: SelectVariant,
-    protected executionLogRoute: ExecutionLogRoute,
-    protected moduleRef: ModuleRef
+    protected createExecutionDetails: CreateExecutionDetails,
+    protected moduleRef: ModuleRef,
+    private sendWebhookMessage: SendWebhookMessage,
+    private resolveChannelEndpoints: ResolveChannelEndpoints,
+    private agentRepository: AgentRepository,
+    private agentIntegrationRepository: AgentIntegrationRepository,
+    private featureFlagsService: FeatureFlagsService,
+    private msTeamsTokenService: MsTeamsTokenService
   ) {
     super(
       messageRepository,
-      createLogUsecase,
-      executionLogRoute,
+      createExecutionDetails,
       subscriberRepository,
       selectIntegration,
       getNovuProviderCredentials,
@@ -73,396 +204,1305 @@ export class SendMessageChat extends SendMessageBase {
   }
 
   @InstrumentUsecase()
-  public async execute(command: SendMessageCommand) {
-    Sentry.addBreadcrumb({
+  public async execute(command: SendMessageChannelCommand): Promise<SendMessageResult> {
+    try {
+      // Phase 1: Prepare message context (template processing, content compilation)
+      const assignedAgentId = await this.resolveAssignedAgentId(command);
+      const messageContext = await this.prepareMessageContext(command, assignedAgentId);
+
+      // Phase 2: Resolve all channels into unified format
+      let channels = await this.resolveAllChannels(command);
+
+      if (channels.length === 0) {
+        if (command.contextKeys.length > 0) {
+          await this.createExecutionDetail(
+            command,
+            DetailEnum.SUBSCRIBER_CONTEXT_NO_ACTIVE_CHANNEL,
+            ExecutionDetailsStatusEnum.WARNING
+          );
+        } else {
+          await this.createExecutionDetail(
+            command,
+            DetailEnum.SUBSCRIBER_NO_ACTIVE_CHANNEL,
+            ExecutionDetailsStatusEnum.WARNING
+          );
+        }
+
+        return {
+          status: SendMessageStatus.SKIPPED,
+          deliveryLifecycleState: {
+            status: DeliveryLifecycleStatusEnum.SKIPPED,
+            detail: DeliveryLifecycleDetail.USER_MISSING_CREDENTIALS,
+          },
+        };
+      }
+
+      if (assignedAgentId) {
+        const gated = await this.gateChannelsForAssignedAgent(channels, assignedAgentId, command);
+        if (gated.length > 0) {
+          channels = gated;
+        } else {
+          await this.createExecutionDetail(
+            command,
+            DetailEnum.CHAT_AGENT_CHANNELS_FALLBACK,
+            ExecutionDetailsStatusEnum.WARNING,
+            undefined,
+            {
+              message:
+                "No chat channels linked to the assigned agent were available; sent using the subscriber's configured channels",
+            }
+          );
+        }
+      }
+
+      // Phase 3: Send to all channels using unified pipeline
+      const status = await this.sendToAllChannels(channels, messageContext);
+
+      // Phase 4: Finalize and return result
+      return await this.finalizeResult(command, status);
+    } catch (e) {
+      if (e instanceof PlatformException && e.message === DetailEnum.MESSAGE_CONTENT_NOT_GENERATED) {
+        return {
+          status: SendMessageStatus.FAILED,
+          errorMessage: DetailEnum.MESSAGE_CONTENT_NOT_GENERATED,
+        };
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Prepares the message context by handling template processing, variant resolution, and content compilation
+   */
+  private async prepareMessageContext(
+    command: SendMessageChannelCommand,
+    assignedAgentId: string | null
+  ): Promise<MessageContext> {
+    addBreadcrumb({
       message: 'Sending Chat',
     });
-    const step: NotificationStepEntity = command.step;
+    const { step } = command;
     if (!step?.template) throw new PlatformException('Chat channel template not found');
 
     const { subscriber } = command.compileContext;
-    const i18nextInstance = await this.initiateTranslations(
-      command.environmentId,
-      command.organizationId,
-      subscriber.locale
-    );
-
     const template = await this.processVariants(command);
 
     if (template) {
       step.template = template;
     }
 
-    let content = '';
+    const bridgeOutput = command.bridgeData?.outputs as ChatOutput | undefined;
+    let content: string = bridgeOutput?.body || '';
+    const card = bridgeOutput?.card as CardElement | undefined;
 
     try {
       if (!command.bridgeData) {
+        // Bridge output is already rendered (and translated), so translations are only loaded here.
+        const i18nInstance = await this.initiateTranslations(
+          command.environmentId,
+          command.organizationId,
+          subscriber.locale
+        );
         content = await this.compileTemplate.execute(
           CompileTemplateCommand.create({
             template: step.template.content as string,
             data: this.getCompilePayload(command.compileContext),
-          })
+          }),
+          i18nInstance
         );
       }
     } catch (e) {
       await this.sendErrorHandlebars(command.job, e.message);
-
-      return;
+      throw new PlatformException(DetailEnum.MESSAGE_CONTENT_NOT_GENERATED);
     }
+
+    return { command, step, content, card, assignedAgentId };
+  }
+
+  /**
+   * Resolves all channels (both new and legacy) into a unified format for processing
+   */
+  private async resolveAllChannels(command: SendMessageChannelCommand): Promise<UnifiedChannel[]> {
+    const integrationChannelGroups = await this.getChannelEndpointGroups(command);
+    const legacyChatChannels = await this.getLegacyChatChannels(command, integrationChannelGroups);
+
+    const unifiedChannels: UnifiedChannel[] = [];
+
+    // Add new integration channel groups
+    for (const integrationGroup of integrationChannelGroups) {
+      unifiedChannels.push({
+        type: 'new',
+        data: integrationGroup,
+      });
+    }
+
+    // Add legacy channels
+    for (const legacyChannel of legacyChatChannels) {
+      unifiedChannels.push({
+        type: 'legacy',
+        data: legacyChannel,
+      });
+    }
+
+    return unifiedChannels;
+  }
+
+  /**
+   * Processes all unified channels using a single processing pipeline
+   */
+  private async sendToAllChannels(
+    channels: UnifiedChannel[],
+    messageContext: MessageContext
+  ): Promise<SendMessageStatus> {
+    let status: SendMessageStatus = SendMessageStatus.FAILED;
+
+    for (const channel of channels) {
+      try {
+        let result: SendMessageResult;
+
+        if (channel.type === 'new') {
+          result = await this.sendChannelMessage(
+            messageContext.command,
+            channel.data as IntegrationEndpoints,
+            messageContext.step,
+            messageContext.content,
+            messageContext.assignedAgentId,
+            messageContext.card
+          );
+        } else {
+          result = await this.sendChannelMessageLegacy(
+            messageContext.command,
+            channel.data as IChannelSettings,
+            messageContext.step,
+            messageContext.content,
+            messageContext.assignedAgentId,
+            messageContext.card
+          );
+        }
+
+        status = this.updateStatus(status, result.status);
+      } catch (e) {
+        /*
+         * Do nothing, one chat channel failed, perhaps another one succeeds
+         * The failed message has been created
+         */
+        const channelId =
+          channel.type === 'new'
+            ? (channel.data as IntegrationEndpoints).providerId
+            : (channel.data as IChannelSettings).providerId;
+        Logger.error(e, `Sending chat message to ${channel.type} channel ${channelId} failed`, LOG_CONTEXT);
+      }
+    }
+
+    return status;
+  }
+
+  /**
+   * Finalizes the send result by handling final status logic and creating appropriate execution details
+   */
+  private async finalizeResult(
+    command: SendMessageChannelCommand,
+    status: SendMessageStatus
+  ): Promise<SendMessageResult> {
+    if (status === SendMessageStatus.FAILED) {
+      await this.createExecutionDetail(command, DetailEnum.CHAT_ALL_CHANNELS_FAILED, ExecutionDetailsStatusEnum.FAILED);
+
+      return {
+        status,
+        errorMessage: DetailEnum.CHAT_ALL_CHANNELS_FAILED,
+      };
+    } else if (status === SendMessageStatus.SKIPPED) {
+      await this.createExecutionDetail(
+        command,
+        DetailEnum.CHAT_SOME_CHANNELS_SKIPPED,
+        ExecutionDetailsStatusEnum.WARNING
+      );
+
+      return {
+        status: SendMessageStatus.SKIPPED,
+        deliveryLifecycleState: {
+          status: DeliveryLifecycleStatusEnum.SKIPPED,
+          detail: DeliveryLifecycleDetail.USER_MISSING_CREDENTIALS,
+        },
+      };
+    }
+
+    return {
+      status,
+    };
+  }
+
+  private async getLegacyChatChannels(
+    command: SendMessageChannelCommand,
+    channelEndpointGroups: IntegrationEndpoints[] = []
+  ): Promise<IChannelSettings[]> {
+    const { subscriber } = command.compileContext;
 
     const chatChannels =
       subscriber.channels?.filter((chan) =>
         Object.values(ChatProviderIdEnum).includes(chan.providerId as ChatProviderIdEnum)
       ) || [];
 
-    const phone = subscriber.phone;
-    chatChannels.push({
-      providerId: ChatProviderIdEnum.WhatsAppBusiness,
-      credentials: {
-        phoneNumber: phone,
-      },
-    });
+    /*
+     * Phone-based chat providers (WhatsApp Business, Sendblue) deliver to a phone number. Auto-resolve
+     * a channel for each such provider that has an active integration, so we only attempt providers
+     * the environment is actually configured for. The recipient is the provider override `to` when
+     * set, else `subscriber.phone` — a subscriber may own several numbers, so the trigger can pick one
+     * per message even when no phone is stored on the subscriber.
+     * Skip providers that already have a legacy channel OR a new channel-endpoint group — otherwise
+     * the same phone number is notified twice (once via endpoints, once via this synthetic channel).
+     */
+    if (subscriber.phone || this.hasPhoneBasedProviderOverrides(command)) {
+      const activePhoneIntegrations = await this.getActivePhoneBasedIntegrations(command);
+      const existingProviderIds = new Set<string>([
+        ...chatChannels.map((channel) => channel.providerId),
+        ...channelEndpointGroups.map((group) => group.providerId),
+      ]);
 
-    if (chatChannels.length === 0) {
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          detail: DetailEnum.SUBSCRIBER_NO_ACTIVE_CHANNEL,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-        })
-      );
+      for (const { providerId, integrationIdentifier } of activePhoneIntegrations) {
+        if (existingProviderIds.has(providerId)) continue;
 
-      return;
-    }
+        const providerOverrides = combineProviderOverrides(
+          command.bridgeData,
+          command.overrides,
+          command.step.stepId,
+          providerId,
+          integrationIdentifier
+        );
+        const phoneNumber = resolvePhoneDestination(providerOverrides.to, subscriber.phone);
 
-    let allFailed = true;
-    for (const channel of chatChannels) {
-      try {
-        await this.sendChannelMessage(command, channel, step, content);
-        allFailed = false;
-      } catch (e) {
-        /*
-         * Do nothing, one chat channel failed, perhaps another one succeeds
-         * The failed message has been created
-         */
-        Logger.error(e, `Sending chat message to the chat channel ${channel.providerId} failed`, LOG_CONTEXT);
+        if (!phoneNumber) continue;
+
+        // @ts-expect-error - Adding a phone-based channel without _integrationId
+        chatChannels.push({
+          providerId,
+          credentials: {
+            phoneNumber,
+          },
+        });
       }
     }
 
-    if (allFailed) {
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          detail: DetailEnum.CHAT_ALL_CHANNELS_FAILED,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-        })
-      );
-    }
+    return chatChannels;
   }
 
-  private async sendChannelMessage(
-    command: SendMessageCommand,
-    subscriberChannel: IChannelSettings,
-    chatChannel: NotificationStepEntity,
-    content: string
-  ) {
-    const getIntegrationParams: {
-      id?: string;
-      providerId?: ProvidersIdEnum;
-      identifier?: string;
-      organizationId: string;
-      environmentId: string;
-      channelType: ChannelTypeEnum;
-      userId: string;
-      filterData: {
-        tenant: ITenantDefine | undefined;
-      };
-    } = {
-      organizationId: command.organizationId,
-      environmentId: command.environmentId,
-      providerId: subscriberChannel.providerId,
-      channelType: ChannelTypeEnum.CHAT,
-      userId: command.userId,
-      filterData: {
-        tenant: command.job.tenant,
-      },
-    };
+  /**
+   * Cheap, in-memory gate: true when the bridge output or the trigger carries overrides for any
+   * phone-based chat provider. Lets subscribers without a stored phone skip the integration lookups
+   * unless an override could supply the recipient.
+   */
+  private hasPhoneBasedProviderOverrides(command: SendMessageChannelCommand): boolean {
+    const bridgeProviders = (command.bridgeData as { providers?: Record<string, unknown> } | undefined)?.providers;
+    const triggerProviders = command.overrides?.providers;
+    const stepProviders = command.step.stepId ? command.overrides?.steps?.[command.step.stepId]?.providers : undefined;
 
-    /**
-     * Current a workaround as chat providers for whatsapp is more similar to sms than to our chat implementation
-     */
-    if (subscriberChannel.providerId !== ChatProviderIdEnum.WhatsAppBusiness) {
-      getIntegrationParams.id = subscriberChannel._integrationId;
-    }
+    return PHONE_BASED_CHAT_PROVIDERS.some(
+      (providerId) => bridgeProviders?.[providerId] || triggerProviders?.[providerId] || stepProviders?.[providerId]
+    );
+  }
 
-    const integration = await this.getIntegration(getIntegrationParams);
-
-    if (subscriberChannel.providerId !== ChatProviderIdEnum.WhatsAppBusiness) {
-      if (!integration) {
-        await this.executionLogRoute.execute(
-          ExecutionLogRouteCommand.create({
-            ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-            detail: DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
-            source: ExecutionDetailsSourceEnum.INTERNAL,
-            status: ExecutionDetailsStatusEnum.FAILED,
-            isTest: false,
-            isRetry: false,
-            raw: JSON.stringify({
-              reason: `Integration with integrationId: ${subscriberChannel?._integrationId} is either deleted or not active`,
-            }),
+  /**
+   * Returns the phone-based chat providers that have an active integration selectable for this job,
+   * mirroring the selection performed later by {@link getAndValidateIntegration}.
+   */
+  private async getActivePhoneBasedIntegrations(command: SendMessageChannelCommand): Promise<ActivePhoneIntegration[]> {
+    const results = await Promise.all(
+      PHONE_BASED_CHAT_PROVIDERS.map(async (providerId): Promise<ActivePhoneIntegration | null> => {
+        const selection = await this.selectIntegration.execute(
+          SelectIntegrationCommand.create({
+            organizationId: command.organizationId,
+            environmentId: command.environmentId,
+            channelType: ChannelTypeEnum.CHAT,
+            providerId,
+            userId: command.userId,
+            filterData: this.getIntegrationFilterData(command),
           })
         );
 
-        return;
-      }
-    } else if (!integration) {
-      /**
-       * TODO: Need to handle a proper execution log error for this case
-       */
-      return;
-    }
-
-    const bridgeOverride = this.getBridgeOverride(command.bridgeData?.providers, integration);
-
-    const chatWebhookUrl =
-      bridgeOverride?.webhookUrl || command.payload.webhookUrl || subscriberChannel.credentials?.webhookUrl;
-    const phoneNumber = subscriberChannel.credentials?.phoneNumber;
-    const channelSpecification = subscriberChannel.credentials?.channel;
-
-    const message: MessageEntity = await this.messageRepository.create({
-      _notificationId: command.notificationId,
-      _environmentId: command.environmentId,
-      _organizationId: command.organizationId,
-      _subscriberId: command._subscriberId,
-      _templateId: command._templateId,
-      _messageTemplateId: chatChannel.template?._id,
-      channel: ChannelTypeEnum.CHAT,
-      transactionId: command.transactionId,
-      chatWebhookUrl: chatWebhookUrl,
-      phone: phoneNumber,
-      content: this.storeContent() ? content : null,
-      providerId: subscriberChannel.providerId,
-      _jobId: command.jobId,
-      tags: command.tags,
-    });
-
-    await this.sendSelectedIntegrationExecution(command.job, integration);
-
-    await this.executionLogRoute.execute(
-      ExecutionLogRouteCommand.create({
-        ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-        detail: DetailEnum.MESSAGE_CREATED,
-        source: ExecutionDetailsSourceEnum.INTERNAL,
-        status: ExecutionDetailsStatusEnum.PENDING,
-        messageId: message._id,
-        isTest: false,
-        isRetry: false,
-        raw: this.storeContent() ? JSON.stringify(content) : null,
+        return selection ? { providerId, integrationIdentifier: selection.integration?.identifier } : null;
       })
     );
 
-    if ((chatWebhookUrl && integration) || (phoneNumber && integration)) {
-      await this.sendMessage(chatWebhookUrl, integration, content, message, command, channelSpecification, phoneNumber);
-
-      return;
-    }
-
-    await this.sendErrors(chatWebhookUrl, integration, message, command, phoneNumber);
+    return results.filter((result): result is ActivePhoneIntegration => result !== null);
   }
 
-  private getBridgeOverride(
-    providersOverrides: IProvidersOverride | undefined,
-    integration: IntegrationEntity
-  ): IProviderOverride | null {
-    if (!providersOverrides) {
-      return null;
+  /**
+   * Sends one message to multiple endpoints per integration (fanout)
+   */
+  private async sendChannelMessage(
+    command: SendMessageChannelCommand,
+    integrationChannelData: IntegrationEndpoints,
+    step: NotificationStepEntity,
+    content: string,
+    assignedAgentId: string | null,
+    card?: CardElement
+  ): Promise<SendMessageResult> {
+    const { selection, error } = await this.getAndValidateIntegration(
+      command,
+      integrationChannelData.providerId,
+      undefined,
+      integrationChannelData.integrationIdentifier
+    );
+    if (error) return error;
+    const { integration } = selection;
+    const resolvedSelection = integrationChannelData.matchedConditions
+      ? { ...selection, matchedConditions: integrationChannelData.matchedConditions }
+      : selection;
+
+    const message = await this.createMessage(
+      command,
+      step,
+      content,
+      integrationChannelData.providerId,
+      resolvedSelection,
+      {},
+      integrationChannelData.channelData
+    );
+
+    let status: SendMessageStatus = SendMessageStatus.FAILED;
+
+    for (const channelData of integrationChannelData.channelData) {
+      try {
+        const result = await this.sendMessage(
+          channelData,
+          integration,
+          content,
+          card,
+          message,
+          command,
+          assignedAgentId ?? undefined
+        );
+
+        if (result.status === SendMessageStatus.SUCCESS) {
+          status = SendMessageStatus.SUCCESS;
+        }
+      } catch (e) {
+        Logger.error(e, 'Failed to send chat message', LOG_CONTEXT);
+      }
     }
 
-    const providerExists = Object.keys(providersOverrides).includes(integration.providerId);
-
-    if (!providerExists) {
-      return null;
+    if (status === SendMessageStatus.SUCCESS) {
+      return { status };
     }
 
-    return providersOverrides[integration.providerId];
+    return {
+      status: SendMessageStatus.FAILED,
+      errorMessage: DetailEnum.PROVIDER_ERROR,
+    };
+  }
+
+  /**
+   * @deprecated - this method handles sending to legacy chat channels
+   * sends 1 message per integration (no fanout to multiple endpoints)
+   */
+  private async sendChannelMessageLegacy(
+    command: SendMessageChannelCommand,
+    subscriberChannel: IChannelSettings,
+    step: NotificationStepEntity,
+    content: string,
+    assignedAgentId: string | null,
+    card?: CardElement
+  ): Promise<SendMessageResult> {
+    /**
+     * Workaround: phone-based chat providers (WhatsApp, Sendblue) behave more like SMS than our
+     * webhook-based chat implementation, so they select their integration by providerId rather
+     * than by the subscriber channel's _integrationId (which is absent on auto-resolved channels).
+     * Agent gating may stamp `integrationIdentifier` to pin dispatch to a linked integration.
+     */
+    const isPhoneBased = PHONE_BASED_CHAT_PROVIDERS.includes(subscriberChannel.providerId as ChatProviderIdEnum);
+    const agentBoundIdentifier = (subscriberChannel as LegacyChannelWithBoundIntegration).integrationIdentifier;
+    const integrationId = isPhoneBased ? undefined : subscriberChannel._integrationId;
+    const integrationIdentifier = isPhoneBased ? agentBoundIdentifier : undefined;
+
+    const { selection, error } = await this.getAndValidateIntegration(
+      command,
+      subscriberChannel.providerId,
+      integrationId,
+      integrationIdentifier
+    );
+    if (error) return error;
+    const { integration } = selection;
+
+    const combinedOverrides = combineProviderOverrides(
+      command.bridgeData,
+      command.overrides,
+      command.step.stepId,
+      integration.providerId,
+      integration.identifier
+    );
+
+    /*
+     * Auto-resolved phone channels (no _integrationId) picked their recipient from the overrides of the
+     * integration selected at resolution time. Agent gating may have bound another integration since,
+     * so re-resolve against the integration actually sending.
+     */
+    if (isPhoneBased && !subscriberChannel._integrationId) {
+      const phoneNumber = resolvePhoneDestination(combinedOverrides.to, command.compileContext.subscriber.phone);
+      subscriberChannel = { ...subscriberChannel, credentials: { ...subscriberChannel.credentials, phoneNumber } };
+    }
+
+    const chatWebhookUrl =
+      combinedOverrides?.webhookUrl || command.payload.webhookUrl || subscriberChannel.credentials?.webhookUrl;
+    const phoneNumber = subscriberChannel.credentials?.phoneNumber;
+
+    // transform the legacy channel (chatWebhookUrl, phoneNumber, channelSpecification) to new channelData interface
+    const channelData = this.buildLegacyChannelData(subscriberChannel, combinedOverrides, command);
+
+    const message = await this.createMessage(
+      command,
+      step,
+      content,
+      subscriberChannel.providerId,
+      selection,
+      {
+        chatWebhookUrl,
+        phone: phoneNumber,
+      },
+      channelData ? [channelData] : undefined
+    );
+
+    if (channelData) {
+      return await this.sendMessage(
+        channelData,
+        integration,
+        content,
+        card,
+        message,
+        command,
+        assignedAgentId ?? undefined
+      );
+    }
+
+    return await this.sendErrors(chatWebhookUrl, integration, message, command, phoneNumber);
+  }
+
+  private buildLegacyChannelData(
+    subscriberChannel: IChannelSettings,
+    combinedOverrides: Record<string, unknown> | null,
+    command: SendMessageChannelCommand
+  ): ChannelData | null {
+    const chatWebhookUrl =
+      combinedOverrides?.webhookUrl || command.payload.webhookUrl || subscriberChannel.credentials?.webhookUrl;
+
+    const phoneNumber = subscriberChannel.credentials?.phoneNumber;
+    const channelSpecification = subscriberChannel.credentials?.channel;
+
+    if (chatWebhookUrl) {
+      return {
+        identifier: '-',
+        type: ENDPOINT_TYPES.WEBHOOK,
+        endpoint: {
+          url: chatWebhookUrl,
+          ...(channelSpecification && { channel: channelSpecification }),
+        },
+      };
+    }
+
+    if (phoneNumber) {
+      return {
+        identifier: '-',
+        type: ENDPOINT_TYPES.PHONE,
+        endpoint: { phoneNumber },
+      };
+    }
+
+    return null;
+  }
+
+  private async getChannelEndpointGroups(command: SendMessageChannelCommand): Promise<IntegrationEndpoints[]> {
+    return this.resolveChannelEndpoints.execute(
+      ResolveChannelEndpointsCommand.create({
+        environmentId: command.environmentId,
+        organizationId: command.organizationId,
+        userId: command.userId,
+        subscriberId: command.subscriberId,
+        channelType: ChannelTypeEnum.CHAT,
+        contextKeys: command.contextKeys,
+        filterData: this.getIntegrationFilterData(command),
+      })
+    );
   }
 
   private async sendErrors(
     chatWebhookUrl: string,
     integration: IntegrationEntity,
     message: MessageEntity,
-    command: SendMessageCommand,
+    command: SendMessageChannelCommand,
     phoneNumber?: string
-  ) {
+  ): Promise<SendMessageResult> {
     if (integration?.providerId === ChatProviderIdEnum.WhatsAppBusiness && !phoneNumber) {
-      await this.messageRepository.updateMessageStatus(
-        command.environmentId,
-        message._id,
-        'warning',
-        null,
+      return await this.handleMissingResourceError(
+        command,
+        message,
+        DetailEnum.CHAT_MISSING_PHONE_NUMBER,
+        DeliveryLifecycleDetail.USER_MISSING_PHONE,
         'no_subscriber_chat_phone_number',
-        'Subscriber does not have phone number specified'
+        'Subscriber does not have phone number specified',
+        'Subscriber does not have a phone number for selected integration'
       );
-
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          messageId: message._id,
-          detail: DetailEnum.CHAT_MISSING_PHONE_NUMBER,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-          raw: JSON.stringify({
-            reason: `Subscriber does not have a phone number for selected integration`,
-          }),
-        })
-      );
-    } else if (!chatWebhookUrl) {
-      await this.messageRepository.updateMessageStatus(
-        command.environmentId,
-        message._id,
-        'warning',
-        null,
-        'no_subscriber_chat_channel_id',
-        'Subscriber does not have active chat channel id'
-      );
-
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          messageId: message._id,
-          detail: DetailEnum.CHAT_WEBHOOK_URL_MISSING,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-          raw: JSON.stringify({
-            reason: `webhookUrl for integrationId: ${integration?.identifier} is missing`,
-          }),
-        })
-      );
-
-      return;
     }
+
+    if (!chatWebhookUrl) {
+      return await this.handleMissingResourceError(
+        command,
+        message,
+        DetailEnum.CHAT_WEBHOOK_URL_MISSING,
+        DeliveryLifecycleDetail.USER_MISSING_WEBHOOK_URL,
+        'no_subscriber_chat_channel_id',
+        'Subscriber does not have active chat channel id',
+        `webhookUrl for integrationId: ${integration?.identifier} is missing`
+      );
+    }
+
     if (!integration) {
+      Logger.warn(
+        {
+          hasChatWebhookUrl: Boolean(chatWebhookUrl),
+          hasPhoneNumber: Boolean(phoneNumber),
+          messageId: String(message?._id ?? ''),
+        },
+        `${LOG_CONTEXT} — sendErrors: missing integration (unexpected if getAndValidateIntegration succeeded)`
+      );
+
       await this.sendErrorStatus(
         message,
         'warning',
         'chat_missing_integration_error',
         'Subscriber does not have an active chat integration',
+        command
+      );
+
+      await this.createExecutionDetail(
         command,
-        LogCodeEnum.MISSING_CHAT_INTEGRATION
+        DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
+        ExecutionDetailsStatusEnum.FAILED,
+        message._id,
+        'Integration is either deleted or not active'
       );
 
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          messageId: message._id,
-          detail: DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-          raw: JSON.stringify({
-            reason: 'Integration is either deleted or not active',
-          }),
-        })
-      );
-
-      return;
+      return {
+        status: SendMessageStatus.FAILED,
+        errorMessage: DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
+      };
     }
+
+    return {
+      status: SendMessageStatus.FAILED,
+      errorMessage: DetailEnum.PROVIDER_ERROR,
+    };
   }
 
   private async sendMessage(
-    chatWebhookUrl: string,
+    channelData: ChannelData,
     integration: IntegrationEntity,
     content: string,
+    card: CardElement | undefined,
     message: MessageEntity,
-    command: SendMessageCommand,
-    channelSpecification?: string | undefined,
-    phoneNumber?: string | undefined
-  ) {
+    command: SendMessageChannelCommand,
+    assignedAgentId?: string
+  ): Promise<SendMessageResult> {
+    const chatHandler = this.setupChatHandler(integration);
+    const overrides = this.buildMessageOverrides(command, integration);
+
+    const providerOverrides = combineProviderOverrides(
+      command.bridgeData,
+      command.overrides,
+      command.step.stepId,
+      integration.providerId,
+      integration.identifier
+    );
+    // Phone-based providers merge this over the resolved phone; a blank `to` would erase it.
+    const combinedOverrides = PHONE_BASED_CHAT_PROVIDERS.includes(integration.providerId as ChatProviderIdEnum)
+      ? omitBlankPhoneDestination(providerOverrides)
+      : providerOverrides;
+
+    // Apply channel data overrides if present for this specific endpoint
+    const overriddenChannelData = this.applyEndpointSpecificOverrides(channelData, combinedOverrides);
+
+    let sentMessage: ISendMessageSuccessResponse;
+    let sendResult: SendMessageResult;
+
     try {
-      const chatFactory = new ChatFactory();
-      const chatHandler = chatFactory.getHandler(integration);
-      if (!chatHandler) {
-        throw new PlatformException(`Chat handler for provider ${integration.providerId} is  not found`);
+      // Rich Chat: resolve the compiled card into transport-ready fields once, here — before
+      // `send` — so the provider stays a pure transport and the editor preview can reuse the
+      // same `render()`. Gated by `IS_CHAT_BLOCK_EDITOR_ENABLED`; when off, the legacy plain-text
+      // `content` path is used unchanged. Skip when a content override is present — it replaces the
+      // card at delivery (otherwise Slack prefers default Block Kit `blocks` over override `text`).
+      let messageContent = content;
+      let nativePayload: Record<string, unknown> | undefined;
+      const isRichChatEnabled = await this.isRichChatEnabled(command);
+      const hasContentOverride = hasChatContentOverride(integration.providerId, combinedOverrides);
+
+      if (card && isRichChatEnabled && !hasContentOverride) {
+        const resolved = await chatHandler.resolveCardContent(card);
+        messageContent = resolved.content;
+        nativePayload = resolved.nativePayload;
+        this.logCardRenderWarnings(resolved.validation, command);
       }
 
-      const bridgeContent = this.getOverrideContent(command.bridgeData, integration);
-      const overrides = {
-        ...(command.overrides[integration?.channel] || {}),
-        ...(command.overrides[integration?.providerId] || {}),
-      };
-
-      const result = await chatHandler.send({
-        phoneNumber,
+      sentMessage = await chatHandler.send({
+        channelData: overriddenChannelData,
+        bridgeProviderData: combinedOverrides,
         customData: overrides,
-        webhookUrl: chatWebhookUrl,
-        channel: channelSpecification,
-        ...(bridgeContent?.content ? (bridgeContent as DefinedContent) : { content }),
+        content: messageContent,
+        nativePayload,
       });
 
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          messageId: message._id,
-          detail: DetailEnum.MESSAGE_SENT,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.SUCCESS,
-          isTest: false,
-          isRetry: false,
-          raw: JSON.stringify(result),
-        })
-      );
-    } catch (e) {
-      await this.sendErrorStatus(
-        message,
-        'error',
-        'unexpected_chat_error',
-        e.message || e.name || 'Un-expect CHAT provider error',
+      if (sentMessage.id) {
+        await this.persistProviderIdentifier(sentMessage.id, message, command, assignedAgentId);
+      }
+
+      sendResult = await this.handleMessageSendSuccess(sentMessage, message, command, overriddenChannelData);
+    } catch (error) {
+      return await this.handleMessageSendError(error, message, command, overriddenChannelData);
+    }
+
+    // Outside the try: the message is delivered, so nothing about its files may turn it into a failure.
+    await this.sendChatFiles({
+      chatHandler,
+      integration,
+      channelData: overriddenChannelData,
+      sentMessage,
+      bridgeProviderData: combinedOverrides,
+      customData: overrides,
+      message,
+      command,
+    });
+
+    return sendResult;
+  }
+
+  /**
+   * Sends the trigger attachments marked for chat (`channels` includes `chat`) right after the
+   * message, to the same place. Never throws: problems only add a warning to the activity log.
+   */
+  private async sendChatFiles({
+    chatHandler,
+    integration,
+    channelData,
+    sentMessage,
+    bridgeProviderData,
+    customData,
+    message,
+    command,
+  }: {
+    chatHandler: IChatHandler;
+    integration: IntegrationEntity;
+    channelData: ChannelData;
+    sentMessage: ISendMessageSuccessResponse;
+    bridgeProviderData: Record<string, unknown>;
+    customData: Record<string, unknown>;
+    message: MessageEntity;
+    command: SendMessageChannelCommand;
+  }): Promise<void> {
+    try {
+      const { files, unavailable } = getChatAttachments(command.payload);
+
+      if (files.length === 0 && unavailable.length === 0) {
+        return;
+      }
+
+      const delivered =
+        files.length > 0
+          ? await this.deliverChatFiles(files, chatHandler, integration, {
+              channelData,
+              sentMessage,
+              bridgeProviderData,
+              customData,
+            })
+          : [];
+      const results = [...delivered, ...unavailable];
+      const notSent = results.filter((result) => result.status !== 'sent');
+
+      if (notSent.length > 0) {
+        Logger.warn(
+          { jobId: command.jobId, providerId: integration.providerId, files: notSent },
+          `${notSent.length} of ${results.length} chat file(s) were not sent`,
+          LOG_CONTEXT
+        );
+      }
+
+      await this.createExecutionDetail(
         command,
-        LogCodeEnum.CHAT_ERROR,
-        e
+        notSent.length > 0 ? DetailEnum.CHAT_FILES_NOT_SENT : DetailEnum.CHAT_FILES_SENT,
+        notSent.length > 0 ? ExecutionDetailsStatusEnum.WARNING : ExecutionDetailsStatusEnum.SUCCESS,
+        message._id,
+        { files: results, channelData: this.redactChannelData(channelData) }
+      );
+    } catch (error) {
+      Logger.error(error, 'Failed to send or record chat files', LOG_CONTEXT);
+    }
+  }
+
+  private async deliverChatFiles(
+    files: IChatFile[],
+    chatHandler: IChatHandler,
+    integration: IntegrationEntity,
+    target: {
+      channelData: ChannelData;
+      sentMessage: ISendMessageSuccessResponse;
+      bridgeProviderData: Record<string, unknown>;
+      customData: Record<string, unknown>;
+    }
+  ): Promise<IChatFileDeliveryResult[]> {
+    try {
+      const channelData = await this.withFileUploadAccess(target.channelData, integration);
+      const results = await chatHandler.sendFiles({ ...target, channelData, files });
+
+      if (results) {
+        return results;
+      }
+
+      return files.map((file) => ({
+        name: file.name,
+        status: 'skipped',
+        reason: `Novu doesn't send files to ${integration.providerId} yet.`,
+      }));
+    } catch (error) {
+      return files.map((file) => ({ name: file.name, status: 'failed', reason: this.getErrorMessage(error) }));
+    }
+  }
+
+  /**
+   * Microsoft Teams files are uploaded with Microsoft Graph, which needs its own app-only token
+   * in the subscriber's tenant. Fetched only here, when a message has files to send.
+   */
+  private async withFileUploadAccess(channelData: ChannelData, integration: IntegrationEntity): Promise<ChannelData> {
+    if (channelData.type !== ENDPOINT_TYPES.MS_TEAMS_CHANNEL && channelData.type !== ENDPOINT_TYPES.MS_TEAMS_USER) {
+      return channelData;
+    }
+
+    const { clientId, secretKey } = integration.credentials ?? {};
+
+    if (!clientId || !secretKey) {
+      throw new Error('The Microsoft Teams integration is missing its client ID or client secret.');
+    }
+
+    try {
+      const graphToken = await this.msTeamsTokenService.getGraphToken(
+        clientId,
+        secretKey,
+        channelData.subscriberTenantId
       );
 
-      await this.executionLogRoute.execute(
-        ExecutionLogRouteCommand.create({
-          ...ExecutionLogRouteCommand.getDetailsFromJob(command.job),
-          messageId: message._id,
-          detail: DetailEnum.PROVIDER_ERROR,
-          source: ExecutionDetailsSourceEnum.INTERNAL,
-          status: ExecutionDetailsStatusEnum.FAILED,
-          isTest: false,
-          isRetry: false,
-          raw: JSON.stringify(e),
-        })
+      return { ...channelData, graphToken };
+    } catch (error) {
+      throw new Error(
+        `Couldn't get Microsoft Graph access in tenant ${channelData.subscriberTenantId}: ${describeAadError(error)}`
       );
     }
   }
 
-  private getOverrideContent(
-    bridgeData: ExecuteOutput<IBridgeChannelResponse> | undefined | null,
-    integration: IntegrationEntity
-  ): { content: string | undefined; blocks: IBlock[] | undefined } | { content: string | undefined } {
-    const bridgeProviderOverride = this.getBridgeOverride(bridgeData?.providers, integration);
+  private async persistProviderIdentifier(
+    identifier: string,
+    message: MessageEntity,
+    command: SendMessageChannelCommand,
+    assignedAgentId?: string
+  ): Promise<void> {
+    try {
+      await this.messageRepository.update(
+        {
+          _id: message._id,
+          _environmentId: command.environmentId,
+        },
+        {
+          $set: {
+            identifier,
+            ...(assignedAgentId ? { _agentId: assignedAgentId } : {}),
+          },
+        }
+      );
+    } catch (error) {
+      Logger.error(
+        {
+          err: error,
+          jobId: command.jobId,
+          messageId: message._id,
+          agentId: assignedAgentId,
+          identifier,
+        },
+        'Failed to persist provider identifier on message after successful send',
+        LOG_CONTEXT
+      );
 
-    let bridgeContent: { content: string | undefined; blocks: IBlock[] | undefined } | { content: string | undefined };
-    if (bridgeProviderOverride) {
-      bridgeContent = { content: bridgeProviderOverride.text, blocks: bridgeProviderOverride.blocks };
-    } else {
-      bridgeContent = { content: bridgeData?.outputs.body };
+      await this.createExecutionDetail(
+        command,
+        DetailEnum.CHAT_AGENT_PLATFORM_THREAD_PERSIST_FAILED,
+        ExecutionDetailsStatusEnum.WARNING,
+        message._id,
+        {
+          identifier,
+          message: this.getErrorMessage(error),
+        }
+      );
+    }
+  }
+
+  private async resolveAssignedAgentId(command: SendMessageChannelCommand): Promise<string | null> {
+    if (command.job._agentId !== undefined) {
+      if (command.job._agentId === null) {
+        return null;
+      }
+
+      return String(command.job._agentId);
     }
 
-    return bridgeContent;
+    const workflowAgent = command.workflow?.agent;
+    if (!workflowAgent?.identifier) {
+      return null;
+    }
+
+    const agent = await this.agentRepository.findOne(
+      {
+        identifier: workflowAgent.identifier,
+        _environmentId: command.environmentId,
+        _organizationId: command.organizationId,
+      },
+      ['_id']
+    );
+
+    return agent?._id ? String(agent._id) : null;
+  }
+
+  private async gateChannelsForAssignedAgent(
+    channels: UnifiedChannel[],
+    assignedAgentId: string,
+    command: SendMessageChannelCommand
+  ): Promise<UnifiedChannel[]> {
+    const linkedRefs = await this.agentIntegrationRepository.listLinkedIntegrationRefs({
+      agentId: assignedAgentId,
+      environmentId: command.environmentId,
+      organizationId: command.organizationId,
+    });
+    const linkedIntegrationIdentifiers = new Set(linkedRefs.map((ref) => ref.identifier));
+    const linkedIdentifierByProviderId = new Map<string, string>();
+    for (const ref of linkedRefs) {
+      if (!linkedIdentifierByProviderId.has(ref.providerId)) {
+        linkedIdentifierByProviderId.set(ref.providerId, ref.identifier);
+      }
+    }
+
+    return channels.flatMap((channel) => {
+      const eligible = this.evaluateChannelForAgent(
+        channel,
+        linkedIntegrationIdentifiers,
+        linkedIdentifierByProviderId
+      );
+
+      return eligible ? [eligible] : [];
+    });
+  }
+
+  private evaluateChannelForAgent(
+    channel: UnifiedChannel,
+    linkedIntegrationIdentifiers: Set<string>,
+    linkedIdentifierByProviderId: Map<string, string>
+  ): UnifiedChannel | null {
+    if (channel.type === 'legacy') {
+      return this.evaluateLegacyChannelForAgent(channel, linkedIdentifierByProviderId);
+    }
+
+    const channelGroup = channel.data as IntegrationEndpoints;
+
+    if (!linkedIntegrationIdentifiers.has(channelGroup.integrationIdentifier)) {
+      return null;
+    }
+
+    // Phone-based providers deliver to a phone number rather than a token-bearing webhook,
+    // so their endpoints are kept as-is once the integration is confirmed linked.
+    if (PHONE_BASED_CHAT_PROVIDERS.includes(channelGroup.providerId as ChatProviderIdEnum)) {
+      return channel;
+    }
+
+    const supported = filterAgentSupportedEndpoints(channelGroup.channelData);
+
+    if (supported.length === 0) {
+      return null;
+    }
+
+    channelGroup.channelData = supported;
+
+    return channel;
+  }
+
+  /**
+   * Auto-resolved phone channels carry no integration id; bind to the agent's linked
+   * integration for that provider before allowing the channel through.
+   */
+  private evaluateLegacyChannelForAgent(
+    channel: UnifiedChannel,
+    linkedIdentifierByProviderId: Map<string, string>
+  ): UnifiedChannel | null {
+    const legacyChannel = channel.data as LegacyChannelWithBoundIntegration;
+
+    if (!PHONE_BASED_CHAT_PROVIDERS.includes(legacyChannel.providerId as ChatProviderIdEnum)) {
+      return null;
+    }
+
+    const linkedIdentifier = linkedIdentifierByProviderId.get(legacyChannel.providerId);
+    if (!linkedIdentifier) {
+      return null;
+    }
+
+    legacyChannel.integrationIdentifier = linkedIdentifier;
+
+    return channel;
+  }
+
+  private async isRichChatEnabled(command: SendMessageChannelCommand): Promise<boolean> {
+    return await this.featureFlagsService.getFlag({
+      key: FeatureFlagsKeysEnum.IS_CHAT_BLOCK_EDITOR_ENABLED,
+      defaultValue: false,
+      environment: { _id: command.environmentId } as EnvironmentEntity,
+      organization: { _id: command.organizationId } as OrganizationEntity,
+      user: { _id: command.userId } as UserEntity,
+    });
+  }
+
+  /**
+   * Rich Chat: surface the deterministic, non-blocking post-render platform-limit warnings
+   * (e.g. Slack block/char caps) produced while resolving the card into the execution log.
+   */
+  private logCardRenderWarnings(validation: IChatRenderValidation[], command: SendMessageChannelCommand): void {
+    if (validation.length === 0) {
+      return;
+    }
+
+    Logger.warn(
+      { jobId: command.jobId, warnings: validation },
+      `Chat card render produced ${validation.length} platform-limit warning(s)`,
+      LOG_CONTEXT
+    );
+  }
+
+  private updateStatus(currentStatus: SendMessageStatus, newStatus: SendMessageStatus): SendMessageStatus {
+    if (newStatus === SendMessageStatus.SUCCESS) {
+      return SendMessageStatus.SUCCESS;
+    } else if (newStatus === SendMessageStatus.SKIPPED && currentStatus !== SendMessageStatus.SUCCESS) {
+      return SendMessageStatus.SKIPPED;
+    }
+    return currentStatus;
+  }
+
+  private async createMessage(
+    command: SendMessageChannelCommand,
+    step: NotificationStepEntity,
+    content: string,
+    providerId: ProvidersIdEnum,
+    selection: IntegrationSelectionResult,
+    additionalFields: Partial<MessageEntity> = {},
+    channelData?: ChannelData[]
+  ): Promise<MessageEntity> {
+    const message: MessageEntity = await this.messageRepository.create({
+      _notificationId: command.notificationId,
+      _environmentId: command.environmentId,
+      _organizationId: command.organizationId,
+      _subscriberId: command._subscriberId,
+      _templateId: command._templateId,
+      _messageTemplateId: step.template?._id,
+      channel: ChannelTypeEnum.CHAT,
+      transactionId: command.transactionId,
+      content: this.storeContent() ? content : null,
+      providerId,
+      templateIdentifier: command.identifier,
+      _jobId: command.jobId,
+      tags: command.tags,
+      severity: command.severity,
+      stepId: command.step.stepId,
+      contextKeys: command.contextKeys,
+      ...(channelData &&
+        channelData.length > 0 && { channelData: channelData.map((data) => this.redactChannelData(data)) }),
+      ...additionalFields,
+    });
+
+    await this.sendSelectedIntegrationExecution(command.job, selection);
+
+    await this.createExecutionDetail(
+      command,
+      DetailEnum.MESSAGE_CREATED,
+      ExecutionDetailsStatusEnum.PENDING,
+      message._id,
+      this.storeContent() ? content : null
+    );
+
+    return message;
+  }
+
+  private async getAndValidateIntegration(
+    command: SendMessageChannelCommand,
+    providerId: ProvidersIdEnum,
+    integrationId?: string,
+    integrationIdentifier?: string
+  ): Promise<
+    { selection: IntegrationSelectionResult; error?: never } | { selection?: never; error: SendMessageResult }
+  > {
+    const getIntegrationParams = {
+      organizationId: command.organizationId,
+      environmentId: command.environmentId,
+      providerId,
+      channelType: ChannelTypeEnum.CHAT,
+      userId: command.userId,
+      filterData: this.getIntegrationFilterData(command),
+      ...(integrationId && { id: integrationId }),
+      ...(integrationIdentifier && { identifier: integrationIdentifier }),
+    };
+
+    const selection = await this.getIntegration(getIntegrationParams);
+
+    if (!selection) {
+      const reason = integrationIdentifier
+        ? `Integration with integrationIdentifier: ${integrationIdentifier} is either deleted or not active`
+        : integrationId
+          ? `Integration with integrationId: ${integrationId} is either deleted or not active`
+          : `Integration is either deleted or not active`;
+
+      Logger.warn(
+        {
+          reason,
+          providerId,
+          hasIntegrationId: Boolean(integrationId),
+          hasIntegrationIdentifier: Boolean(integrationIdentifier),
+          environmentId: command.environmentId,
+          organizationId: command.organizationId,
+          jobId: String(command.job?._id ?? ''),
+          hasJobTenant: Boolean(command.job.tenant),
+        },
+        `${LOG_CONTEXT} — getAndValidateIntegration: no integration from SelectIntegration`
+      );
+
+      await this.createExecutionDetail(
+        command,
+        DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
+        ExecutionDetailsStatusEnum.FAILED,
+        undefined,
+        reason
+      );
+
+      return {
+        error: {
+          status: SendMessageStatus.FAILED,
+          errorMessage: DetailEnum.SUBSCRIBER_NO_ACTIVE_INTEGRATION,
+        },
+      };
+    }
+
+    return { selection };
+  }
+
+  private async createExecutionDetail(
+    command: SendMessageChannelCommand,
+    detail: DetailEnum,
+    status: ExecutionDetailsStatusEnum,
+    messageId?: string,
+    rawData?: Record<string, unknown> | string | null
+  ): Promise<void> {
+    const rawValue = rawData ? (typeof rawData === 'string' ? rawData : JSON.stringify(rawData)) : undefined;
+
+    await this.createExecutionDetails.execute(
+      CreateExecutionDetailsCommand.create({
+        ...CreateExecutionDetailsCommand.getDetailsFromJob(command.job),
+        ...(messageId && { messageId }),
+        detail,
+        source: ExecutionDetailsSourceEnum.INTERNAL,
+        status,
+        isTest: false,
+        isRetry: false,
+        ...(rawValue && { raw: rawValue }),
+      })
+    );
+  }
+
+  private redactChannelData(channelData: ChannelData): ChannelData {
+    return {
+      ...channelData,
+      ...('token' in channelData && channelData.token && { token: `${channelData.token.slice(0, 8)}...` }),
+    };
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
+  }
+
+  private getErrorResponseData(error: unknown): Record<string, unknown> {
+    if (error && typeof error === 'object' && 'response' in error) {
+      const errorWithResponse = error as { response?: { data?: unknown } };
+      const responseData = errorWithResponse.response?.data;
+      return responseData ? { responseData } : {};
+    }
+    return {};
+  }
+
+  private setupChatHandler(integration: IntegrationEntity) {
+    const chatFactory = new ChatFactory();
+    const chatHandler = chatFactory.getHandler(integration);
+
+    if (!chatHandler) {
+      throw new PlatformException(`Chat handler for provider ${integration.providerId} is  not found`);
+    }
+
+    return chatHandler;
+  }
+
+  private buildMessageOverrides(command: SendMessageChannelCommand, integration: IntegrationEntity) {
+    return {
+      ...(integration?.channel ? command.overrides[integration.channel] || {} : {}),
+      ...(command.overrides[integration?.providerId] || {}),
+    };
+  }
+
+  private applyEndpointSpecificOverrides<T extends ChannelData>(
+    originalChannelData: T,
+    combinedOverrides: Record<string, unknown>
+  ): T {
+    const { identifier, type } = originalChannelData;
+
+    // Early returns for invalid cases
+    if (!identifier) return originalChannelData;
+
+    const endpointOverrides = combinedOverrides[identifier];
+    if (!endpointOverrides || typeof endpointOverrides !== 'object') {
+      return originalChannelData;
+    }
+
+    const newEndpoint = (endpointOverrides as Record<string, unknown>).endpoint;
+    if (!newEndpoint || typeof newEndpoint !== 'object') {
+      return originalChannelData;
+    }
+
+    // Validate the new endpoint against the channel type schema
+    try {
+      validateEndpointForType(type, newEndpoint as Record<string, unknown>);
+
+      return {
+        ...originalChannelData,
+        endpoint: newEndpoint as T['endpoint'],
+      };
+    } catch (_error) {
+      // ignoring the override since it's invalid
+      return originalChannelData;
+    }
+  }
+
+  private async handleMessageSendSuccess(
+    result: ISendMessageSuccessResponse,
+    message: MessageEntity,
+    command: SendMessageChannelCommand,
+    channelData: ChannelData
+  ): Promise<SendMessageResult> {
+    const redactedChannelData = this.redactChannelData(channelData);
+
+    await this.createExecutionDetail(
+      command,
+      DetailEnum.MESSAGE_SENT,
+      ExecutionDetailsStatusEnum.SUCCESS,
+      message._id,
+      {
+        ...result,
+        channelData: redactedChannelData,
+      }
+    );
+
+    await this.sendWebhookMessage.execute({
+      eventType: WebhookEventEnum.MESSAGE_SENT,
+      objectType: WebhookObjectTypeEnum.MESSAGE,
+      payload: {
+        object: messageWebhookMapper(message, command.subscriberId, {
+          providerResponseId: result.id,
+          // for backwards compatibility
+          webhookUrl: channelData.type === ENDPOINT_TYPES.WEBHOOK ? channelData.endpoint.url : undefined,
+          channelData: redactedChannelData,
+        }),
+      },
+      organizationId: command.organizationId,
+      environmentId: command.environmentId,
+      environment: command.environment,
+    });
+
+    return {
+      status: SendMessageStatus.SUCCESS,
+    };
+  }
+
+  private async handleMessageSendError(
+    error: unknown,
+    message: MessageEntity,
+    command: SendMessageChannelCommand,
+    channelData: ChannelData
+  ): Promise<SendMessageResult> {
+    const redactedChannelData = this.redactChannelData(channelData);
+
+    await this.sendErrorStatus(
+      message,
+      'error',
+      'unexpected_chat_error',
+      this.getErrorMessage(error) || 'Un-expect CHAT provider error',
+      command,
+      error
+    );
+
+    await this.createExecutionDetail(
+      command,
+      DetailEnum.PROVIDER_ERROR,
+      ExecutionDetailsStatusEnum.FAILED,
+      message._id,
+      {
+        channelData: redactedChannelData,
+        message: this.getErrorMessage(error),
+        ...this.getErrorResponseData(error),
+      }
+    );
+
+    await this.sendWebhookMessage.execute({
+      eventType: WebhookEventEnum.MESSAGE_SENT,
+      objectType: WebhookObjectTypeEnum.MESSAGE,
+      payload: {
+        object: messageWebhookMapper(message, command.subscriberId, {
+          channelData: redactedChannelData,
+        }),
+        error: {
+          message: this.getErrorMessage(error) || 'Error while sending chat with provider',
+        },
+      },
+      organizationId: command.organizationId,
+      environmentId: command.environmentId,
+      environment: command.environment,
+    });
+
+    return {
+      status: SendMessageStatus.FAILED,
+      errorMessage: DetailEnum.PROVIDER_ERROR,
+    };
+  }
+
+  private async handleMissingResourceError(
+    command: SendMessageChannelCommand,
+    message: MessageEntity,
+    detail: DetailEnum,
+    lifecycleDetail: DeliveryLifecycleDetail,
+    messageStatusKey: string,
+    messageStatusDescription: string,
+    reason: string
+  ): Promise<SendMessageResult> {
+    await this.messageRepository.updateMessageStatus(
+      command.environmentId,
+      message._id,
+      'warning',
+      null,
+      messageStatusKey,
+      messageStatusDescription
+    );
+
+    await this.createExecutionDetail(command, detail, ExecutionDetailsStatusEnum.FAILED, message._id, reason);
+
+    return {
+      status: SendMessageStatus.SKIPPED,
+      deliveryLifecycleState: {
+        status: DeliveryLifecycleStatusEnum.SKIPPED,
+        detail: lifecycleDetail,
+      },
+    };
   }
 }
-
-type DefinedContent = { content: string; blocks: IBlock[] | undefined } | { content: string };

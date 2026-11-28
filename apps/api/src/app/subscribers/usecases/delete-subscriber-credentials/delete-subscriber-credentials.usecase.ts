@@ -1,64 +1,44 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { SubscriberRepository, IntegrationRepository, SubscriberEntity } from '@novu/dal';
-import { AnalyticsService, buildSubscriberKey, InvalidateCacheService } from '@novu/application-generic';
-
+import { buildSubscriberKey, InvalidateCacheService } from '@novu/application-generic';
+import { SubscriberRepository } from '@novu/dal';
 import { DeleteSubscriberCredentialsCommand } from './delete-subscriber-credentials.command';
-import { GetSubscriberCommand, GetSubscriber } from '../get-subscriber';
 
 @Injectable()
 export class DeleteSubscriberCredentials {
   constructor(
     private invalidateCache: InvalidateCacheService,
-    private subscriberRepository: SubscriberRepository,
-    private integrationRepository: IntegrationRepository,
-    private analyticsService: AnalyticsService,
-    private getSubscriberUseCase: GetSubscriber
+    private subscriberRepository: SubscriberRepository
   ) {}
 
   async execute(command: DeleteSubscriberCredentialsCommand): Promise<void> {
-    const foundSubscriber = await this.getSubscriberUseCase.execute(
-      GetSubscriberCommand.create({
-        ...command,
-      })
+    const foundSubscriber = await this.subscriberRepository.findBySubscriberId(
+      command.environmentId,
+      command.subscriberId,
+      true,
+      '_id subscriberId'
     );
 
-    const foundIntegration = await this.integrationRepository.findOne(
-      {
-        _environmentId: command.environmentId,
-        providerId: command.providerId,
-      },
-      '_id'
-    );
-
-    if (!foundIntegration) {
-      throw new NotFoundException(
-        `Subscribers environment (${command.environmentId}) do not have ${command.providerId} integration.`
-      );
+    if (!foundSubscriber) {
+      throw new NotFoundException(`Subscriber '${command.subscriberId}' was not found`);
     }
 
-    await this.deleteSubscriberCredentials(
+    await this.deleteSubscriberCredentialsOfOneProvider(
       foundSubscriber.subscriberId,
       command.environmentId,
-      foundIntegration._id,
+      command.providerId,
       foundSubscriber._id
     );
-
-    this.analyticsService.mixpanelTrack('Delete Subscriber Credentials - [Subscribers]', '', {
-      providerId: command.providerId,
-      _organization: command.organizationId,
-      _subscriberId: foundSubscriber._id,
-    });
   }
 
-  private async deleteSubscriberCredentials(
+  private async deleteSubscriberCredentialsOfOneProvider(
     subscriberId: string,
     environmentId: string,
-    integrationId: string,
+    providerId: string,
     _subscriberId: string
   ) {
     await this.invalidateCache.invalidateByKey({
       key: buildSubscriberKey({
-        subscriberId: subscriberId,
+        subscriberId,
         _environmentId: environmentId,
       }),
     });
@@ -68,7 +48,7 @@ export class DeleteSubscriberCredentials {
         _id: _subscriberId,
         _environmentId: environmentId,
       },
-      { $pull: { channels: { _integrationId: integrationId } } }
+      { $pull: { channels: { providerId } } }
     );
   }
 }

@@ -1,7 +1,11 @@
-import { IsArray, IsBoolean, IsDefined, IsInt, IsMongoId, IsOptional, IsString, Max, Min } from 'class-validator';
+import type { SubscriberEntity } from '@novu/dal';
+import { SeverityLevelEnum, type TagsFilter } from '@novu/shared';
+import { IsBoolean, IsDefined, IsInt, IsMongoId, IsOptional, IsString, Max, Min } from 'class-validator';
 
 import { EnvironmentWithSubscriber } from '../../../shared/commands/project.command';
 import { CursorPaginationParams } from '../../../shared/types';
+import { IsEnumOrArray } from '../../../shared/validators/is-enum-or-array';
+import { IsTagsFilter } from '../../validators/is-tags-filter.validator';
 
 export class GetNotificationsCommand extends EnvironmentWithSubscriber implements CursorPaginationParams {
   @IsInt()
@@ -19,9 +23,8 @@ export class GetNotificationsCommand extends EnvironmentWithSubscriber implement
   readonly offset: number;
 
   @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  readonly tags?: string[];
+  @IsTagsFilter()
+  readonly tags?: TagsFilter;
 
   @IsOptional()
   @IsBoolean()
@@ -30,4 +33,31 @@ export class GetNotificationsCommand extends EnvironmentWithSubscriber implement
   @IsOptional()
   @IsBoolean()
   readonly archived?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  readonly snoozed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  readonly seen?: boolean;
+
+  @IsOptional()
+  @IsString()
+  readonly data?: string;
+
+  @IsOptional()
+  @IsEnumOrArray(SeverityLevelEnum)
+  readonly severity?: SeverityLevelEnum | SeverityLevelEnum[];
+
+  @IsOptional()
+  @IsInt()
+  readonly createdGte?: number;
+
+  @IsOptional()
+  @IsInt()
+  readonly createdLte?: number;
+
+  @IsOptional()
+  readonly subscriber?: SubscriberEntity;
 }

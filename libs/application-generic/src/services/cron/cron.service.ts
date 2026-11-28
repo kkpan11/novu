@@ -1,26 +1,15 @@
-const nr = require('newrelic');
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnApplicationBootstrap,
-  OnApplicationShutdown,
-} from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import {
   CronExpressionEnum,
   JobCronNameEnum,
   ObservabilityBackgroundTransactionEnum,
   TimezoneEnum,
 } from '@novu/shared';
+import { captureException } from '@sentry/node';
 import { MetricsService } from '../metrics';
-import { ACTIVE_CRON_JOBS_TOKEN } from './cron.constants';
-import {
-  CronJobData,
-  CronMetricsEventEnum,
-  CronJobProcessor,
-  CronMetrics,
-  CronOptions,
-} from './cron.types';
+import { CronJobData, CronJobProcessor, CronMetrics, CronMetricsEventEnum, CronOptions } from './cron.types';
+
+const nr = require('newrelic');
 
 const LOG_CONTEXT = 'CronService';
 const DEFAULT_CRON_OPTIONS: CronOptions = {
@@ -39,9 +28,7 @@ const METRICS_JOB_CONCURRENCY = 1;
 const METRICS_JOB_LOCK_LIFETIME = 1 * 60 * 1000; // 1 minute in milliseconds
 
 @Injectable()
-export abstract class CronService
-  implements OnApplicationBootstrap, OnApplicationShutdown
-{
+export abstract class CronService implements OnApplicationBootstrap, OnApplicationShutdown {
   private deploymentName = process.env.FLEET_NAME ?? 'default';
   protected abstract cronServiceName: string;
 
@@ -78,37 +65,26 @@ export abstract class CronService
 
       return;
     } else {
-      Logger.log(
-        `Active CRON jobs found for ${
-          this.cronServiceName
-        }: [${this.activeJobs.join(', ')}]`,
-        LOG_CONTEXT
-      );
+      Logger.log(`Active CRON jobs found for ${this.cronServiceName}: [${this.activeJobs.join(', ')}]`, LOG_CONTEXT);
     }
 
     try {
-      Logger.log(
-        `Starting the '${this.cronServiceName}' CRON service up`,
-        LOG_CONTEXT
-      );
+      Logger.log(`Starting the '${this.cronServiceName}' CRON service up`, LOG_CONTEXT);
       let retries = CRON_STARTUP_RETRIES;
       const createTimeoutPromise = () =>
-        new Promise((resolve, reject) =>
+        new Promise((resolve, reject) => {
           setTimeout(
-            () =>
-              reject(
-                `Timed out while starting the ${this.cronServiceName} CRON service`
-              ),
+            () => reject(`Timed out while starting the ${this.cronServiceName} CRON service`),
             CRON_STARTUP_TIMEOUT
-          )
-        );
+          );
+        });
 
       while (retries > 0) {
         try {
           await Promise.race([this.initialize(), createTimeoutPromise()]);
           break; // If the promise is resolved, break the loop
         } catch (error) {
-          retries--;
+          retries -= 1;
           if (retries === 0) throw error; // If it's the last retry, throw the error
           Logger.warn(
             `Attempt ${CRON_STARTUP_RETRIES - retries} to start the '${
@@ -119,10 +95,7 @@ export abstract class CronService
         }
       }
       await this.createSendCronMetricsJob();
-      Logger.log(
-        `Starting up the '${this.cronServiceName}' CRON service has finished`,
-        LOG_CONTEXT
-      );
+      Logger.log(`Starting up the '${this.cronServiceName}' CRON service has finished`, LOG_CONTEXT);
     } catch (error) {
       Logger.error(
         `Failed to start the '${this.cronServiceName}' CRON service after ${CRON_STARTUP_RETRIES} retries`,
@@ -147,21 +120,11 @@ export abstract class CronService
     }
 
     try {
-      Logger.log(
-        `Shutting the '${this.cronServiceName}' CRON service down`,
-        LOG_CONTEXT
-      );
+      Logger.log(`Shutting the '${this.cronServiceName}' CRON service down`, LOG_CONTEXT);
       await this.shutdown();
-      Logger.log(
-        `Shutting down the '${this.cronServiceName}' CRON service has finished`,
-        LOG_CONTEXT
-      );
+      Logger.log(`Shutting down the '${this.cronServiceName}' CRON service has finished`, LOG_CONTEXT);
     } catch (error) {
-      Logger.error(
-        `Failed to shut down the '${this.cronServiceName}' CRON service`,
-        error,
-        LOG_CONTEXT
-      );
+      Logger.error(`Failed to shut down the '${this.cronServiceName}' CRON service`, error, LOG_CONTEXT);
     }
   }
 
@@ -176,10 +139,7 @@ export abstract class CronService
     options: CronOptions
   ): Promise<void> {
     if (!this.isActiveJob(jobName)) {
-      Logger.verbose(
-        `The '${jobName}' job is not active and will not be added to the CRON service`,
-        LOG_CONTEXT
-      );
+      Logger.verbose(`The '${jobName}' job is not active and will not be added to the CRON service`, LOG_CONTEXT);
 
       return;
     }
@@ -190,16 +150,15 @@ export abstract class CronService
     };
     this.handleJobOutcome(jobName, CronMetricsEventEnum.CREATE_STARTED);
     try {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
       const _this = this;
       this.addJob(
         jobName,
         async function runCronJob(job) {
-          nr.startBackgroundTransaction(
-            ObservabilityBackgroundTransactionEnum.CRON_JOB_QUEUE,
-            `cron-${jobName}`,
-            function transactionHandler() {
-              return new Promise<void>(async (resolve, reject) => {
+          return new Promise<void>((resolve, reject) => {
+            nr.startBackgroundTransaction(
+              ObservabilityBackgroundTransactionEnum.CRON_JOB_QUEUE,
+              `cron-${jobName}`,
+              async function transactionHandler() {
                 const transaction = nr.getTransaction();
                 try {
                   _this.handleJobOutcome(jobName, CronMetricsEventEnum.STARTED);
@@ -208,24 +167,17 @@ export abstract class CronService
                     startedAt: job.startedAt,
                     data: job.data as TData,
                   });
-                  _this.handleJobOutcome(
-                    jobName,
-                    CronMetricsEventEnum.COMPLETED
-                  );
+                  _this.handleJobOutcome(jobName, CronMetricsEventEnum.COMPLETED);
                   resolve();
                 } catch (error) {
-                  _this.handleJobOutcome(
-                    jobName,
-                    CronMetricsEventEnum.FAILED,
-                    error
-                  );
+                  _this.handleJobOutcome(jobName, CronMetricsEventEnum.FAILED, error);
                   reject(error);
                 } finally {
                   transaction.end();
                 }
-              });
-            }
-          );
+              }
+            );
+          });
         },
         interval,
         {
@@ -282,11 +234,7 @@ export abstract class CronService
     });
   }
 
-  private handleJobOutcome(
-    jobName: JobCronNameEnum,
-    event: CronMetricsEventEnum,
-    error?: unknown
-  ) {
+  private handleJobOutcome(jobName: JobCronNameEnum, event: CronMetricsEventEnum, error?: unknown) {
     const outcomeMessage = `Cron/${this.deploymentName}/${jobName}/${event}`;
     this.metricsService.recordMetric(outcomeMessage, 1);
 
@@ -294,6 +242,9 @@ export abstract class CronService
     const logMessage = `${eventName}: '${jobName}' job`;
 
     if (error) {
+      if (process.env.SENTRY_DSN) {
+        captureException(error, { tags: { jobName, event, eventName } });
+      }
       Logger.error(logMessage, error, LOG_CONTEXT);
     } else {
       Logger.verbose(logMessage, LOG_CONTEXT);

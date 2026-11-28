@@ -1,24 +1,24 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JobTopicNameEnum } from '@novu/shared';
-
-import { QueueBaseService } from './queue-base.service';
+import { IWorkflowBulkJobDto, IWorkflowJobDto } from '../../dtos';
+import { PinoLogger } from '../../logging';
 import { BullMqService } from '../bull-mq';
 import { WorkflowInMemoryProviderService } from '../in-memory-provider';
-import { IWorkflowBulkJobDto, IWorkflowJobDto } from '../../dtos';
+import { SqsService } from '../sqs';
+import { QueueBaseService } from './queue-base.service';
 
 const LOG_CONTEXT = 'WorkflowQueueService';
 
 @Injectable()
 export class WorkflowQueueService extends QueueBaseService {
   constructor(
-    public workflowInMemoryProviderService: WorkflowInMemoryProviderService
+    public workflowInMemoryProviderService: WorkflowInMemoryProviderService,
+    sqsService: SqsService,
+    logger: PinoLogger
   ) {
-    super(
-      JobTopicNameEnum.WORKFLOW,
-      new BullMqService(workflowInMemoryProviderService)
-    );
+    super(JobTopicNameEnum.WORKFLOW, new BullMqService(workflowInMemoryProviderService), sqsService, logger);
 
-    Logger.log(`Creating queue ${this.topic}`, LOG_CONTEXT);
+    Logger.log({ topic: this.topic }, 'Creating queue', LOG_CONTEXT);
 
     this.createQueue();
   }

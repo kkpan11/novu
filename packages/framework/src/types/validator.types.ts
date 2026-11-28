@@ -1,8 +1,17 @@
-import { ValidateFunction as AjvValidateFunction } from 'ajv';
-import { ParseReturnType } from 'zod';
-import { Schema, JsonSchema } from './schema.types';
+import type { ValidateFunction as AjvValidateFunction } from 'ajv';
+import type { ImportRequirement } from './import.types';
+import type { FromSchema, FromSchemaUnvalidated, Schema } from './schema.types';
+import type { JsonSchema } from './schema.types/json.schema.types';
 
-export type ValidateFunction<T = unknown> = AjvValidateFunction<T> | ((data: T) => ParseReturnType<T>);
+/**
+ * The result of a Zod `safeParse` call. Declared structurally so it holds for both Zod v3 and v4,
+ * whose exported result types differ.
+ */
+type ZodSafeParseResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> } };
+
+export type ValidateFunction<T = unknown> = AjvValidateFunction<T> | ((data: T) => ZodSafeParseResult<T>);
 
 export type ValidationError = {
   path: string;
@@ -19,9 +28,15 @@ export type ValidateResult<T> =
       data: T;
     };
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
-export interface Validator<T_Schema extends Schema> {
-  validate: <T_Data>(data: T_Data, schema: T_Schema) => Promise<ValidateResult<T_Data>>;
-  isSchema: (schema: Schema) => schema is T_Schema;
-  transformToJsonSchema: (schema: T_Schema) => JsonSchema;
-}
+export type Validator<T_Schema extends Schema = Schema> = {
+  validate: <
+    T_Unvalidated extends Record<string, unknown> = FromSchemaUnvalidated<T_Schema>,
+    T_Validated extends Record<string, unknown> = FromSchema<T_Schema>,
+  >(
+    data: T_Unvalidated,
+    schema: T_Schema
+  ) => Promise<ValidateResult<T_Validated>>;
+  canHandle: (schema: Schema) => Promise<boolean>;
+  transformToJsonSchema: (schema: T_Schema) => Promise<JsonSchema>;
+  requiredImports: readonly ImportRequirement[];
+};

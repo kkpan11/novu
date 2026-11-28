@@ -1,37 +1,52 @@
-const nr = require('newrelic');
-import { Server, Socket } from 'socket.io';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
-import { instrument } from '@socket.io/admin-ui';
-
-import { ISubscriberJwt, ObservabilityBackgroundTransactionEnum } from '@novu/shared';
 import { IDestroy } from '@novu/application-generic';
+import { ISubscriberJwt, ObservabilityBackgroundTransactionEnum, WebSocketEventEnum } from '@novu/shared';
+import { instrument } from '@socket.io/admin-ui';
+import { DefaultEventsMap, Server, Socket } from 'socket.io';
 
 import { SubscriberOnlineService } from '../shared/subscriber-online';
 
+const nr = require('newrelic');
+
 const LOG_CONTEXT = 'WSGateway';
 
+// Longer delays overflow setTimeout's 32-bit signed int and fire at once.
+const MAX_TIMEOUT_DELAY_MS = 2 ** 31 - 1;
+
+type SubscriberSession = ISubscriberJwt & { exp?: number };
+
+// socket.io's Redis adapter serializes this across instances, so it must stay plain JSON.
+type ConnectionData = {
+  contextKeys?: string[];
+  session?: SubscriberSession;
+};
+
+type Connection = Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, ConnectionData>;
+
 @WebSocketGateway()
-export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDestroy {
+export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDestroy, OnModuleDestroy {
   private isShutdown = false;
 
-  constructor(private jwtService: JwtService, private subscriberOnlineService: SubscriberOnlineService) {}
+  constructor(
+    private jwtService: JwtService,
+    private subscriberOnlineService: SubscriberOnlineService
+  ) {}
 
   @WebSocketServer()
   server: Server;
 
-  async handleDisconnect(connection: Socket) {
-    Logger.log(`New disconnect received from ${connection.id}`, LOG_CONTEXT);
+  async handleDisconnect(connection: Connection) {
+    Logger.debug(`New disconnect received from ${connection.id}`, LOG_CONTEXT);
 
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const _this = this;
 
     return new Promise((resolve, reject) => {
       nr.startBackgroundTransaction(
         ObservabilityBackgroundTransactionEnum.WS_SOCKET_HANDLE_DISCONNECT,
         'WS Service',
-        function () {
+        function processTask() {
           const transaction = nr.getTransaction();
 
           _this
@@ -46,17 +61,16 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
     });
   }
 
-  async handleConnection(connection: Socket) {
-    Logger.log(`New connection received from ${connection.id}`, LOG_CONTEXT);
+  async handleConnection(connection: Connection) {
+    Logger.debug(`New connection received from ${connection.id}`, LOG_CONTEXT);
 
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const _this = this;
 
     return new Promise((resolve, reject) => {
       nr.startBackgroundTransaction(
         ObservabilityBackgroundTransactionEnum.WS_SOCKET_SOCKET_CONNECTION,
         'WS Service',
-        function () {
+        function processTask() {
           const transaction = nr.getTransaction();
 
           _this
@@ -71,12 +85,12 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
     });
   }
 
-  private extractToken(connection: Socket): string | undefined {
+  private extractToken(connection: Connection): string | undefined {
     return connection.handshake.auth?.token || connection.handshake.query?.token;
   }
 
-  private async getSubscriber(token: string): Promise<ISubscriberJwt | undefined> {
-    let subscriber: ISubscriberJwt;
+  private async getSubscriber(token: string): Promise<SubscriberSession | undefined> {
+    let subscriber: SubscriberSession;
 
     try {
       subscriber = await this.jwtService.verify(token as string);
@@ -86,7 +100,7 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
 
       return subscriber;
     } catch (e) {
-      return;
+      /* empty */
     }
   }
 
@@ -95,7 +109,7 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
    * * When a shutdown is in progress, we opt out of updating the subscriber status,
    * assuming that when the current instance goes down, another instance will take its place and handle the subscriber status update.
    */
-  private async processDisconnectionRequest(connection: Socket) {
+  private async processDisconnectionRequest(connection: Connection) {
     if (!this.isShutdown) {
       await this.handlerSubscriberDisconnection(connection);
     } else {
@@ -103,34 +117,28 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
     }
   }
 
-  private async handlerSubscriberDisconnection(connection: Socket) {
-    const token = this.extractToken(connection);
-
-    if (!token || token === 'null') {
-      return;
-    }
-
-    const subscriber = await this.getSubscriber(token);
+  private async handlerSubscriberDisconnection(connection: Connection) {
+    const subscriber = connection.data.session;
     if (!subscriber) {
       return;
     }
 
-    const activeConnections = await this.getActiveConnections(connection, subscriber._id);
+    const activeConnections = await this.getActiveConnections(subscriber._id);
 
-    Logger.log(
+    Logger.debug(
       `Disconnect request received from ${subscriber._id}. Active connections: ${activeConnections}`,
       LOG_CONTEXT
     );
     await this.subscriberOnlineService.handleDisconnection(subscriber, activeConnections);
   }
 
-  private async getActiveConnections(socket: Socket, subscriberId: string) {
+  private async getActiveConnections(subscriberId: string) {
     const activeSockets = await this.server?.in(subscriberId).fetchSockets();
 
     return activeSockets?.length || 0;
   }
 
-  private async processConnectionRequest(connection: Socket) {
+  private async processConnectionRequest(connection: Connection) {
     const token = this.extractToken(connection);
 
     if (!token || token === 'null') {
@@ -146,32 +154,104 @@ export class WSGateway implements OnGatewayConnection, OnGatewayDisconnect, IDes
       return this.disconnect(connection);
     }
 
-    Logger.log(
-      `Connection request received from ${subscriber._id} external id: ${subscriber.subscriberId}`,
+    Logger.debug(
+      `Connection request received from ${subscriber._id} external id: ${subscriber.subscriberId} organization id: ${subscriber.organizationId}`,
       LOG_CONTEXT
     );
 
-    await connection.join(subscriber._id);
+    const contextKeys = subscriber.contextKeys ?? [];
 
-    Logger.log(`Connection request accepted for ${subscriber._id}`, LOG_CONTEXT);
+    connection.data.contextKeys = contextKeys;
+    connection.data.session = subscriber;
+
+    await connection.join(subscriber._id);
+    if (connection.disconnected) {
+      return;
+    }
+
+    this.scheduleExpiry(connection);
+
+    const contextDisplay = contextKeys.length === 0 ? 'no context' : contextKeys.join(', ');
+    Logger.debug(
+      `Connection ${connection.id} accepted for ${subscriber._id} with contexts: ${contextDisplay}`,
+      LOG_CONTEXT
+    );
 
     await this.subscriberOnlineService.handleConnection(subscriber);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async sendMessage(userId: string, event: string, data: any) {
+  async sendMessage(userId: string, event: string, data: unknown, contextKeys: string[]) {
     if (!this.server) {
       Logger.error('No sw server available to send message', LOG_CONTEXT);
 
       return;
     }
 
-    Logger.log(`Sending event ${event} message to ${userId}`, LOG_CONTEXT);
+    const safeContextKeys = contextKeys ?? [];
+    const sockets = await this.server.in(userId).fetchSockets();
 
-    this.server.to(userId).emit(event, data);
+    Logger.log(
+      `Sending event ${event} to ${userId} with message contexts: ${safeContextKeys.length === 0 ? 'none' : safeContextKeys.join(', ')} (${sockets.length} socket(s))`,
+      LOG_CONTEXT
+    );
+
+    for (const socket of sockets) {
+      const inboxContextKeys = socket.data.contextKeys ?? [];
+
+      if (this.isExactMatch(safeContextKeys, inboxContextKeys)) {
+        socket.emit(event, data);
+        Logger.debug(
+          `Delivered to socket ${socket.id} with inbox contexts: ${inboxContextKeys.length === 0 ? 'none' : inboxContextKeys.join(', ')}`,
+          LOG_CONTEXT
+        );
+      } else {
+        Logger.log(
+          `Skipped socket ${socket.id} - contexts mismatch. Message: [${safeContextKeys.join(', ') || 'none'}], Inbox: [${inboxContextKeys.join(', ') || 'none'}]`,
+          LOG_CONTEXT
+        );
+      }
+    }
   }
 
-  private disconnect(socket: Socket) {
+  private isExactMatch(messageContextKeys: string[], inboxContextKeys: string[]): boolean {
+    if (messageContextKeys.length === 0) {
+      return inboxContextKeys.length === 0;
+    }
+
+    if (messageContextKeys.length !== inboxContextKeys.length) {
+      return false;
+    }
+
+    // Order-independent match: all message keys must exist in inbox keys
+    return messageContextKeys.every((key) => inboxContextKeys.includes(key));
+  }
+
+  private scheduleExpiry(connection: Connection) {
+    const exp = connection.data.session?.exp;
+    if (!exp) {
+      return;
+    }
+
+    let timer: NodeJS.Timeout;
+    const arm = () => {
+      const delay = exp * 1000 - Date.now();
+      timer = setTimeout(
+        delay > MAX_TIMEOUT_DELAY_MS ? arm : () => this.expireSession(connection),
+        Math.min(Math.max(delay, 0), MAX_TIMEOUT_DELAY_MS)
+      );
+    };
+
+    arm();
+    connection.once('disconnect', () => clearTimeout(timer));
+  }
+
+  private expireSession(connection: Connection) {
+    Logger.debug(`Session expired for connection ${connection.id}`, LOG_CONTEXT);
+    connection.emit(WebSocketEventEnum.SESSION_EXPIRED);
+    this.disconnect(connection);
+  }
+
+  private disconnect(socket: Connection) {
     socket.disconnect();
   }
 

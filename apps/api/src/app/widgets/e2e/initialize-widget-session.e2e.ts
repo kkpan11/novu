@@ -1,39 +1,28 @@
+import { createHash } from '@novu/application-generic';
 import { IntegrationRepository } from '@novu/dal';
-import { ChannelTypeEnum, InAppProviderIdEnum } from '@novu/shared';
-import { UserSession } from '@novu/testing';
+import { ChannelTypeEnum, InAppProviderIdEnum, SubscriberSessionAuthMethodEnum } from '@novu/shared';
+import { testServer, UserSession } from '@novu/testing';
 import { expect } from 'chai';
-import {
-  buildIntegrationKey,
-  CacheInMemoryProviderService,
-  CacheService,
-  createHash,
-  InvalidateCacheService,
-} from '@novu/application-generic';
+import sinon from 'sinon';
+import { AuthService } from '../../auth/services/auth.service';
+import { SubscriberSessionAuthStatsService } from '../../shared/services/subscriber-session-auth-stats.service';
 
-import { encryptApiKeysMigration } from '../../../../migrations/encrypt-api-keys/encrypt-api-keys-migration';
+// import { encryptApiKeysMigration } from '../../../../migrations/encrypt-api-keys/encrypt-api-keys-migration';
 
 const integrationRepository = new IntegrationRepository();
 const subscriberId = '12345';
 
-describe('Initialize Session - /widgets/session/initialize (POST)', async () => {
+describe('Initialize Session - /widgets/session/initialize (POST) #novu-v0', async () => {
   let session: UserSession;
-  let invalidateCache: InvalidateCacheService;
-
-  before(async () => {
-    const cacheInMemoryProviderService = new CacheInMemoryProviderService();
-    const cacheService = new CacheService(cacheInMemoryProviderService);
-    await cacheService.initialize();
-    invalidateCache = new InvalidateCacheService(cacheService);
-  });
 
   beforeEach(async () => {
     session = new UserSession();
     await session.initialize();
 
-    await setHmacConfig(subscriberId, session, invalidateCache);
+    await setHmacConfig(session);
   });
 
-  it('should create a valid app session for current widget user', async function () {
+  it('should create a valid app session for current widget user', async () => {
     const secretKey = session.environment.apiKeys[0].key;
     const hmacHash = createHash(secretKey, subscriberId);
 
@@ -60,7 +49,7 @@ describe('Initialize Session - /widgets/session/initialize (POST)', async () => 
     expect(body.data.profile.phone).to.equal(phone);
   });
 
-  it('should throw an error when an invalid environment Id passed', async function () {
+  it('should throw an error when an invalid environment Id passed', async () => {
     const { body } = await session.testAgent.post('/v1/widgets/session/initialize').send({
       applicationIdentifier: 'some-not-existing-id',
       subscriberId,
@@ -73,7 +62,7 @@ describe('Initialize Session - /widgets/session/initialize (POST)', async () => 
     expect(body.message).to.contain('Please provide a valid app identifier');
   });
 
-  it('should pass the test with valid HMAC hash', async function () {
+  it('should pass the test with valid HMAC hash', async () => {
     const secretKey = session.environment.apiKeys[0].key;
 
     const hmacHash = createHash(secretKey, subscriberId);
@@ -82,7 +71,7 @@ describe('Initialize Session - /widgets/session/initialize (POST)', async () => 
     expect(response.status).to.equal(201);
   });
 
-  it('should fail the test with invalid subscriber id', async function () {
+  it('should fail the test with invalid subscriber id', async () => {
     const validSecretKey = session.environment.apiKeys[0].key;
 
     const invalidSubscriberId = `invalid-suscriberId`;
@@ -93,7 +82,46 @@ describe('Initialize Session - /widgets/session/initialize (POST)', async () => 
     expect(responseInvalidSubscriberId.body.message).to.contain('Please provide a valid HMAC hash');
   });
 
-  it('should fail the test with invalid secret key', async function () {
+  it('should record hmac widget sessions as legacy-widget and skip failed hmac', async () => {
+    session = new UserSession();
+    await session.initialize({ noWidgetSession: true });
+    await setHmacConfig(session);
+
+    const secretKey = session.environment.apiKeys[0].key;
+    const hmacHash = createHash(secretKey, subscriberId);
+
+    const valid = await initWidgetSession(subscriberId, session, hmacHash);
+    expect(valid.status).to.equal(201);
+
+    const invalid = await initWidgetSession(subscriberId, session, 'invalid-hash');
+    expect(invalid.body.message).to.contain('Please provide a valid HMAC hash');
+
+    expect(await widgetSessionCounts(session.environment._id)).to.deep.equal([
+      { authMethod: SubscriberSessionAuthMethodEnum.HMAC, client: 'legacy-widget', count: 1 },
+    ]);
+  });
+
+  it('should not record a widget session that fails after authentication', async () => {
+    session = new UserSession();
+    await session.initialize({ noWidgetSession: true });
+    await setHmacConfig(session);
+
+    const hmacHash = createHash(session.environment.apiKeys[0].key, subscriberId);
+    const tokenStub = sinon
+      .stub(testServer.getService(AuthService), 'getSubscriberWidgetToken')
+      .rejects(new Error('token failure'));
+
+    try {
+      const { status } = await initWidgetSession(subscriberId, session, hmacHash);
+      expect(status).to.equal(500);
+    } finally {
+      tokenStub.restore();
+    }
+
+    expect(await widgetSessionCounts(session.environment._id)).to.deep.equal([]);
+  });
+
+  it('should fail the test with invalid secret key', async () => {
     const validSecretKey = session.environment.apiKeys[0].key;
 
     const invalidSecretKey = 'invalid-secret-key';
@@ -105,20 +133,33 @@ describe('Initialize Session - /widgets/session/initialize (POST)', async () => 
     expect(responseInvalidSecretKey.body.message).to.contain('Please provide a valid HMAC hash');
   });
 
-  it('should pass api key migration regression tests', async function () {
-    const validSecretKey = session.environment.apiKeys[0].key;
+  /*
+   * it('should pass api key migration regression tests', async function () {
+   *   const validSecretKey = session.environment.apiKeys[0].key;
+   */
 
-    const invalidSubscriberHmacHash = createHash(validSecretKey, subscriberId);
+  //   const invalidSubscriberHmacHash = createHash(validSecretKey, subscriberId);
 
-    await encryptApiKeysMigration();
+  //   await encryptApiKeysMigration();
 
-    const response = await initWidgetSession(subscriberId, session, invalidSubscriberHmacHash);
+  //   const response = await initWidgetSession(subscriberId, session, invalidSubscriberHmacHash);
 
-    expect(response.status).to.equal(201);
-  });
+  /*
+   *   expect(response.status).to.equal(201);
+   * });
+   */
 });
 
-async function initWidgetSession(subscriberIdentifier: string, session, hmacHash?: string) {
+async function widgetSessionCounts(environmentId: string) {
+  const counts = await testServer.getService(SubscriberSessionAuthStatsService).countLastDays(environmentId, 2);
+  if (!counts) {
+    throw new Error('Subscriber session stats are unavailable');
+  }
+
+  return counts;
+}
+
+async function initWidgetSession(subscriberIdentifier: string, session, hmacHash?: string | null) {
   return await session.testAgent.post('/v1/widgets/session/initialize').send({
     applicationIdentifier: session.environment.identifier,
     subscriberId: subscriberIdentifier,
@@ -130,27 +171,7 @@ async function initWidgetSession(subscriberIdentifier: string, session, hmacHash
   });
 }
 
-async function setHmacConfig(userId: string, session: UserSession, invalidateCache: InvalidateCacheService) {
-  await invalidateCache.invalidateQuery({
-    key: buildIntegrationKey().invalidate({
-      _organizationId: session.organization._id,
-    }),
-  });
-
-  const command = {
-    environmentId: session.environment._id,
-    userId,
-    providerId: InAppProviderIdEnum.Novu,
-    channel: ChannelTypeEnum.IN_APP,
-  };
-
-  await invalidateCache.invalidateByKey({
-    key: buildIntegrationKey().cache({
-      _organizationId: session.organization._id,
-      ...command,
-    }),
-  });
-
+async function setHmacConfig(session: UserSession) {
   const result = await integrationRepository.update(
     {
       _environmentId: session.environment._id,

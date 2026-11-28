@@ -1,13 +1,8 @@
-import {
-  InternalServerErrorException,
-  Logger,
-  createParamDecorator,
-} from '@nestjs/common';
+import { createParamDecorator, InternalServerErrorException, Logger } from '@nestjs/common';
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 export const UserSession = createParamDecorator((data, ctx) => {
   let req;
-  if (ctx.getType() === 'graphql') {
+  if ((ctx.getType() as string) === 'graphql') {
     req = ctx.getArgs()[2].req;
   } else {
     req = ctx.switchToHttp().getRequest();

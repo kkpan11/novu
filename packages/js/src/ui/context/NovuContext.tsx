@@ -1,20 +1,18 @@
-import { createContext, createMemo, JSX, useContext } from 'solid-js';
-import { Novu, NovuOptions } from '../../novu';
+import { Accessor, createContext, JSX, useContext } from 'solid-js';
+import { Novu } from '../../novu';
 
 type NovuProviderProps = {
-  options: NovuOptions;
+  novu: Accessor<Novu>;
   children: JSX.Element;
 };
 
-const NovuContext = createContext<Novu | undefined>(undefined);
+const NovuContext = createContext<Accessor<Novu> | undefined>(undefined);
 
 export function NovuProvider(props: NovuProviderProps) {
-  const novu = createMemo(() => new Novu(props.options));
-
-  return <NovuContext.Provider value={novu()}>{props.children}</NovuContext.Provider>;
+  return <NovuContext.Provider value={props.novu}>{props.children}</NovuContext.Provider>;
 }
 
-export function useNovu() {
+export function useNovu(): Accessor<Novu> {
   const context = useContext(NovuContext);
   if (!context) {
     throw new Error('useNovu must be used within a NovuProvider');

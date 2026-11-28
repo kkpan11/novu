@@ -1,0 +1,19 @@
+{
+  "name": "@novu/ee-billing",
+  "sourceRoot": "enterprise/packages/billing/src",
+  "projectType": "library",
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "{workspaceRoot}/.source/billing/src/**/*", "sharedGlobals"]
+  },
+  "targets": {
+    "test": {
+      "cache": false
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx biome lint enterprise/packages/billing"
+      }
+    }
+  }
+}
